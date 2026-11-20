@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Verity Tycoon</title>
+  <script src="/sdk.js"></script>
 
   <style>
     * {
@@ -351,6 +352,8 @@
       background: #302b40;
       border-radius: 20px;
       overflow: hidden;
+      margin-top: 9px;
+      margin-bottom: 9px;
     }
 
     .progress-bar {
@@ -637,15 +640,57 @@
       .wallet-item { font-size: 13px; }
       .nav-btn { font-size: 10px; }
     }
+
+    /* Увеличенная интерактивная сцена и индивидуальные эффекты скинов */
+    .clicker { min-height: 440px; position: relative; isolation: isolate; }
+    .mascot { width: 220px; height: 220px; margin: 24px 0 18px; z-index: 2;
+      border-radius: 50%; background: transparent; border: 0; box-shadow: none; }
+    #verity-3d { width: 100%; height: 100%; }
+    #verity-fx-layer { position:absolute; inset:0; overflow:hidden; pointer-events:none; z-index:1; }
+    .verity-fx { position:absolute; left:50%; top:57%; width:64px; height:64px; object-fit:contain;
+      transform:translate(-50%,-50%); pointer-events:none; will-change:transform,opacity; }
+    /* Свечение применяется ко всем вылетающим частицам: эмодзи, изображениям и лицам. */
+    .verity-fx { filter:drop-shadow(0 0 6px var(--fx-glow,#ffe45c)); }
+    .verity-fx.face { border-radius:50%; border:0; padding:0;
+      clip-path:circle(50% at 50% 50%);
+      box-shadow:0 0 12px var(--fx-glow,#ffe45c),0 0 24px var(--fx-glow,#ffe45c); }
+    .verity-fx.combo { width:48px;height:48px;top:-52px; animation:verity-rain var(--fall-time,1.5s) linear forwards; }
+    .verity-fx.combo { filter:none; will-change:transform,opacity; }
+    .verity-fx.combo.face,
+    img.verity-fx.combo { border-radius:50%; clip-path:circle(50% at 50% 50%);
+      object-fit:cover; overflow:hidden;
+      box-shadow:0 0 12px var(--fx-glow,#ffe45c); }
+    @keyframes verity-rain { 0%{transform:translate3d(var(--rain-x),-40px,0) rotate(0) scale(.7);opacity:0}
+      10%{opacity:1} 100%{transform:translate3d(var(--rain-x),520px,0) rotate(var(--spin,240deg)) scale(1.12);opacity:0} }
+    .clicker.combo-active #verity-fx-layer { z-index:0; }
+    .verity-fx.fast-particle { animation: verity-particle-fast 720ms ease-out forwards; }
+    @keyframes verity-particle-fast {
+      0% { transform:translate3d(-50%,-50%,0) scale(.72) rotate(0); opacity:.95; }
+      100% { transform:translate3d(calc(-50% + var(--vx)),calc(-50% + var(--vy)),0) scale(.18) rotate(var(--spin)); opacity:0; }
+    }
+    .coin-float { position:fixed; z-index:2147483647; pointer-events:none; white-space:nowrap;
+      font:1000 25px Arial,sans-serif; color:#fff0a0;
+      text-shadow:0 2px 2px #754000,0 0 5px #ffb900,0 0 12px #ffcc33;
+      transform:translate3d(-50%,0,0); will-change:transform,opacity;
+      animation:coin-float-fast 850ms cubic-bezier(.2,.7,.25,1) forwards; }
+    @keyframes coin-float-fast {
+      0% { opacity:0; transform:translate3d(-50%,8px,0) scale(.75); }
+      12% { opacity:1; }
+      100% { opacity:0; transform:translate3d(calc(-50% + var(--coin-drift)), -88px,0) scale(1.08); }
+    }
+    .critical-float { position:fixed; z-index:2147483647; pointer-events:none; white-space:nowrap;
+      font:1000 22px Arial,sans-serif; color:#ffec70;
+      text-shadow:0 0 8px #ffae00,0 0 20px #ff6600;
+      animation:critical-float-fast 700ms ease-out forwards; }
+    @keyframes critical-float-fast {
+      0% { opacity:0; transform:translate(-50%,8px) scale(.75); }
+      15% { opacity:1; }
+      100% { opacity:0; transform:translate(-50%,-48px) scale(1.08); }
+    }
+    @media(max-width:650px) { .clicker{min-height:420px}.mascot{width:190px;height:190px;margin:20px 0 16px;} }
+
 </style>
 
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
-  }
-}
-</script>
 
 </head>
 
@@ -653,7 +698,7 @@
   <div class="app">
 
     <header class="header">
-      <div class="logo">VERITY <span>TYCOON</span></div>
+      <div class="logo">ФАБРИКА <span>ВЕРИТИ</span></div>
 
       <div class="wallet">
         <div class="wallet-item">
@@ -664,7 +709,7 @@
         <div class="wallet-item">
           <span class="wallet-icon gem-icon">◆</span>
           <span id="gemBalance">0</span>
-          <span style="color:#a49db3;font-size:12px">GEMS</span>
+          <span style="color:#a49db3;font-size:12px">ГЕМЫ</span>
         </div>
       </div>
       <div class="audio-controls">
@@ -687,7 +732,7 @@
       <div class="factory-top">
         <div>
           <div class="section-title">Твоя фабрика</div>
-          <div class="muted">Производство Verity никогда не останавливается.</div>
+          <div class="muted">Производство Верити никогда не останавливается.</div>
         </div>
 
         <div class="factory-stats">
@@ -699,14 +744,15 @@
       <div class="factory-grid">
 
         <section class="panel clicker">
+          <div id="verity-fx-layer" aria-hidden="true"></div>
           <div class="section-title">Производственный центр</div>
-          <div class="muted">Нажимай на Verity, чтобы получать ◈</div>
+          <div class="muted">Нажимай на Верити, чтобы получать ◈</div>
 
           <div id="verity" class="mascot" role="button" aria-label="Кликнуть по Verity">
               <div id="verity-3d"></div>
           </div>
 
-          <div class="click-hint">НАЖМИ НА VERITY</div>
+          <div class="click-hint">НАЖМИ НА ВЕРИТИ</div>
           <div class="tap-power">+<span id="tapPower">1</span> ◈ ЗА КЛИК</div>
         </section>
 
@@ -721,7 +767,7 @@
                 <span class="upgrade-level" id="clickLevel">Ур. 1</span>
               </div>
 
-              <div class="muted">Verity производит больше ресурсов за каждое нажатие.</div>
+              <div class="muted">Верити производит больше ресурсов за каждое нажатие.</div>
 
               <div class="upgrade-bottom">
                 <span class="gem-price" id="clickCost">25 ◈</span>
@@ -784,7 +830,7 @@
       <section class="panel">
 
         <div class="shop-heading">
-          <h1>Магазин Verity</h1>
+          <h1>Магазин Верити</h1>
           <div class="muted">
             Улучшения, эксклюзивные предметы и премиальная валюта.
           </div>
@@ -839,7 +885,7 @@
   <script src="./script.js"></script>
 
 <script type="module">
-import * as THREE from 'three';
+import * as THREE from './libs/three.module.js';
 
 const mount = document.getElementById('verity-3d');
 
@@ -860,7 +906,7 @@ if (mount) {
         alpha: true
     });
 
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.15;
@@ -877,16 +923,22 @@ if (mount) {
     rim.position.set(3, 1, -4);
     scene.add(rim);
 
-    const geometry = new THREE.SphereGeometry(1, 128, 96);
+    const geometry = new THREE.SphereGeometry(1, 48, 32);
 
     const material = new THREE.MeshStandardMaterial({
         roughness: 0.78,
         metalness: 0
     });
 
+    // Отдельная точка опоры: Verity наклоняется и кувыркается,
+    // но остаётся на месте, а не вращается бесконечно вокруг центра.
+    const verityRoot = new THREE.Group();
     const verity = new THREE.Mesh(geometry, material);
-    verity.rotation.y = -Math.PI / 2;
-    scene.add(verity);
+    // SphereGeometry front (+Z) is centered at UV u=0.25.
+    // Keep the mesh unrotated so the face looks straight at the camera;
+    // rotating by -90 degrees exposed the UV seam instead of the face.
+    verityRoot.add(verity);
+    scene.add(verityRoot);
 
 // ===== ОГНЕННАЯ АУРА VERITY =====
 
@@ -983,7 +1035,7 @@ window.setVerityAura = function(active) {
       default: 'verity_happy.png',
       lovity: 'lovity_happy.png',
       falsity: 'falsity_happy.png',
-      cruelty: 'cruelty_happy.png',
+      cruelty: 'cruelty_smile_happy.png',
       obesity: 'obesity_happy.png',
       mogity: 'mogity_happy.png',
       drip: 'drip_happy.png'
@@ -994,6 +1046,72 @@ let isHappy = false;
 
     
 
+function drawLovityTexture(ctx, image) {
+    // Быстрое заполнение заднего фона цветом розового края.
+    // Исходная Ловити содержит чёрные углы за круглым лицом — не даём им
+    // попасть на сферу: рисуем исходник только внутри точной круглой маски.
+    const w = image.width;
+    const h = image.height;
+    const cx = w / 2;
+    const cy = h / 2;
+    const radius = Math.min(w, h) * 0.498;
+
+    // Берём оттенок с безопасной точки розовой области.
+    let edgeColor = '#f18bb5';
+    try {
+        const sampleCanvas = document.createElement('canvas');
+        sampleCanvas.width = sampleCanvas.height = 1;
+        const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+        sampleCtx.drawImage(image, cx, cy, 1, 1, 0, 0, 1, 1);
+        const pixel = sampleCtx.getImageData(0, 0, 1, 1).data;
+        if (pixel[3] > 0) edgeColor = `rgb(${pixel[0]},${pixel[1]},${pixel[2]})`;
+    } catch (e) {}
+
+    ctx.save();
+    ctx.fillStyle = edgeColor;
+    ctx.fillRect(0, 0, w, h);
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(image, 0, 0, w, h);
+    ctx.restore();
+}
+
+function buildVerityTexture(file, sourceTexture) {
+    const image = sourceTexture.image;
+    const canvas = document.createElement('canvas');
+    // Левая половина — исходное лицо. Правая — однотонная задняя часть.
+    canvas.width = image.width * 2;
+    canvas.height = image.height;
+    const ctx = canvas.getContext('2d');
+
+    // Цвет задней стороны берём из центра исходной текстуры.
+    ctx.fillStyle = '#ffd84d';
+    try {
+        const sample = document.createElement('canvas');
+        sample.width = sample.height = 1;
+        const sampleCtx = sample.getContext('2d', { willReadFrequently: true });
+        sampleCtx.drawImage(image, image.width / 2, image.height / 2, 1, 1, 0, 0, 1, 1);
+        const pixel = sampleCtx.getImageData(0, 0, 1, 1).data;
+        if (pixel[3] > 0) ctx.fillStyle = `rgb(${pixel[0]}, ${pixel[1]}, ${pixel[2]})`;
+    } catch (e) {}
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (file.startsWith('lovity_')) {
+        drawLovityTexture(ctx, image);
+    } else {
+        ctx.drawImage(image, 0, 0, image.width, image.height);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
+    textureCache[file] = texture;
+    // исходное изображение больше не нужно - освобождаем память
+    sourceTexture.dispose();
+    return texture;
+}
+
 function loadVerityTexture(file) {
     if (textureCache[file]) {
         material.map = textureCache[file];
@@ -1002,41 +1120,7 @@ function loadVerityTexture(file) {
     }
 
     loader.load(file, sourceTexture => {
-        const image = sourceTexture.image;
-
-        
-      const canvas = document.createElement('canvas');
-      canvas.width = image.width * 2;
-      canvas.height = image.height;
-
-      const ctx = canvas.getContext('2d');
-
-      // первая половина — оригинальная текстура
-      ctx.drawImage(
-          image,
-          0, 0,
-          image.width,
-          image.height
-      );
-
-      // вторая половина — зеркальное отражение
-      ctx.save();
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(
-          image,
-          0, 0,
-          image.width,
-          image.height
-      );
-      ctx.restore();
-
-        const texture = new THREE.CanvasTexture(canvas);
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
-
-        textureCache[file] = texture;
-        material.map = texture;
+        material.map = buildVerityTexture(file, sourceTexture);
         material.needsUpdate = true;
     }, undefined, error => {
         console.error('Ошибка загрузки текстуры:', file, error);
@@ -1044,14 +1128,119 @@ function loadVerityTexture(file) {
 }
 
 
+
+const verityEffectConfig = {
+    default: { glow:"#ffe34f", color:"#ffe34f", image:"verity_texture.png", emoji:"", kind:"face" },
+    falsity: { glow:"#a77aff", color:"#8f65e8", image:"falsity_texture.png", emoji:"", kind:"face" },
+    cruelty: { glow:"#ff4a20", color:"#ff1b13", image:"cruelty_effect_cut.png", emoji:"", kind:"emoji" },
+    lovity: { glow:"#ff83c5", color:"#f58fbd", image:"lovity_effect_cut.png", emoji:"", kind:"image" },
+    obesity: { glow:"#70ff35", color:"#5cff22", image:null, emoji:"🤓", kind:"emoji" },
+    mogity: { glow:"#59baff", color:"#198be0", image:"mogity_texture.png", emoji:"", kind:"face" },
+    drip: { glow:"#bd8cff", color:"#a77aff", image:null, emoji:"", kind:"face" }
+};
+window.verityEffectConfig = verityEffectConfig;
+// Лёгкие эффекты клика: CSS-анимации вместо отдельного JS requestAnimationFrame
+// для каждой частицы. Частицы ограничены по количеству и частоте создания.
+let lastVerityFxAt = 0;
+let activeVerityFx = 0;
+window.spawnVerityEffects = function(intensity=1, combo=false) {
+    const layer = document.getElementById("verity-fx-layer");
+    const clicker = document.querySelector(".clicker");
+    if (!layer || !clicker) return;
+    const skin = verityEffectConfig[currentSkin] || verityEffectConfig.default;
+    clicker.style.setProperty("--fx-glow", skin.glow);
+    const rect = clicker.getBoundingClientRect();
+    const mascotRect = document.getElementById("verity").getBoundingClientRect();
+    if (combo) {
+        clicker.classList.add("combo-active");
+        const count = 32;
+        let created = 0;
+        const addRainBatch = () => {
+            const batchEnd = Math.min(created + 8, count);
+            for (; created < batchEnd; created++) {
+                const el=document.createElement(skin.image ? "img" : "span");
+                el.className="verity-fx combo"+(skin.kind==="face" ? " face" : "");
+                if (skin.image) {
+                    el.src=skin.image;
+                    el.decoding="async";
+                } else {
+                    el.textContent=skin.emoji || (skin.kind==="face" ? "●" : "✨");
+                }
+                el.style.left=(Math.random()*100)+"%";
+                el.style.top="-36px";
+                el.style.setProperty("--rain-x",(Math.random()*90-45)+"px");
+                el.style.setProperty("--fall-time",(1.15+Math.random()*1.25)+"s");
+                if (currentSkin === "cruelty" || currentSkin === "lovity") {
+                    el.style.width = "52px";
+                    el.style.height = "52px";
+                }
+                el.style.setProperty("--spin",(180+Math.random()*540)+"deg");
+                el.style.animationDelay=(Math.random()*.8)+"s";
+                layer.appendChild(el);
+                setTimeout(()=>el.remove(),2600);
+            }
+            if (created < count) requestAnimationFrame(addRainBatch);
+        };
+        requestAnimationFrame(addRainBatch);
+        setTimeout(()=>clicker.classList.remove("combo-active"),2600);
+        return;
+    }
+    // Обычные клики: меньше частиц и меньше нагрузка на DOM.
+    // Комбо выше оставляет прежние 32 частицы.
+    // не копим частицы, если пользователь тапает очень быстро
+    if (layer.childElementCount > 60) return;
+    const count = intensity >= 7
+        ? 8 + Math.floor(Math.random() * 3)
+        : Math.min(5, 1 + Math.ceil(intensity * 0.65));
+    for(let i=0;i<count;i++) {
+        const side=i%2===0?-1:1;
+        const el=document.createElement(skin.image ? "img" : "span");
+        el.className="verity-fx"+(skin.kind==="face"?" face":"");
+        if(el.tagName==="IMG") el.src=skin.image;
+        else el.textContent=skin.emoji || (skin.kind==="face"?"🙂":"✨");
+        el.style.left=(mascotRect.left-rect.left+mascotRect.width/2+side*(mascotRect.width*.42))+"px";
+        el.style.top=(mascotRect.top-rect.top+mascotRect.height*.72)+"px";
+        // Уменьшенный размер частиц при обычных кликах для всех Верити.
+        const particleSize = (currentSkin === "cruelty" || currentSkin === "lovity") ? 42 : 36;
+        el.style.width=particleSize+"px";
+        el.style.height=el.style.width;
+        layer.appendChild(el);
+        const dx=side*(70+Math.random()*100);
+        const dy=-70-Math.random()*130;
+        const spin=(Math.random()>.5?1:-1)*(120+Math.random()*360);
+        const duration=650+Math.random()*450;
+        const anim=el.animate([
+            { transform:"translate(-50%,0) rotate(0deg) scale(.65)", opacity:1 },
+            { transform:`translate(calc(-50% + ${dx*.78}px),${dy*.78}px) rotate(${spin*.78}deg) scale(1.2)`, opacity:.45, offset:.5 },
+            { transform:`translate(calc(-50% + ${dx}px),${dy}px) rotate(${spin}deg) scale(.65)`, opacity:0 }
+        ],{ duration, easing:"cubic-bezier(.2,.7,.3,1)", fill:"forwards" });
+        anim.onfinish=()=>el.remove();
+    }
+};
+
+function preloadVerityTexture(file) {
+    if (!file || textureCache[file]) return;
+    loader.load(file, sourceTexture => {
+        if (!textureCache[file]) buildVerityTexture(file, sourceTexture);
+    });
+}
+
 window.setVeritySkin = function(skinId) {
     currentSkin = skins[skinId] ? skinId : 'default';
+    // Заранее подготавливаем happy-текстуру, чтобы переход в комбо не тормозил.
+    preloadVerityTexture(happySkins[currentSkin]);
     isHappy = false;
 
     loadVerityTexture(skins[currentSkin]);
+    const fx = verityEffectConfig[currentSkin] || verityEffectConfig.default;
+    glowMaterial.color.set(fx.glow);
+    rim.color.set(fx.glow);
+    const clicker = document.getElementById("verity");
+    if (clicker) clicker.style.setProperty("--fx-glow", fx.glow);
 };
 
 window.setVerityHappy = function(active) {
+    if (isHappy === active) return;
     isHappy = active;
 
     const file = isHappy
@@ -1077,10 +1266,73 @@ window.setVerityHappy = function(active) {
     new ResizeObserver(resize).observe(mount);
     resize();
 
-    function animate() {
+    const idleStart = performance.now();
+
+    function smoothStep(t) {
+        t = Math.max(0, Math.min(1, t));
+        return t * t * (3 - 2 * t);
+    }
+
+    // Не рисуем 3D, когда Verity не видна (другая вкладка игры / свёрнутая страница)
+    let sceneVisible = true;
+    let loopRunning = false;
+    let lastFrameAt = 0;
+    const MIN_FRAME_MS = 1000 / 60 - 2;
+
+    function startLoop() {
+        if (loopRunning || !sceneVisible || document.hidden) return;
+        loopRunning = true;
+        requestAnimationFrame(animate);
+    }
+
+    new IntersectionObserver(entries => {
+        sceneVisible = entries[entries.length - 1].isIntersecting;
+        startLoop();
+    }).observe(mount);
+    document.addEventListener('visibilitychange', startLoop);
+
+    function animate(frameNow) {
+        if (!sceneVisible || document.hidden) {
+            loopRunning = false;
+            return;
+        }
         requestAnimationFrame(animate);
 
-        verity.rotation.y -= 0.0035;
+        if (frameNow - lastFrameAt < MIN_FRAME_MS) return;
+        lastFrameAt = frameNow;
+
+        // Цикл: покачивание головой «нет» -> кувырок вперёд на 400°
+        // -> мягкое возвращение в исходное положение. Модель не смещается по X/Z.
+        const elapsed = (performance.now() - idleStart) / 1000;
+        const cycleLength = 7.2;
+        const t = elapsed % cycleLength;
+        let nod = 0;
+        let forwardRoll = 0;
+
+        if (t < 3.2) {
+            const fade = Math.sin(Math.PI * t / 3.2);
+            nod = Math.sin(t * Math.PI * 2.0) * 0.22 * fade;
+        } else if (t < 4.55) {
+            const p = smoothStep((t - 3.2) / 1.35);
+            forwardRoll = p * (Math.PI * 2 + THREE.MathUtils.degToRad(40));
+        } else if (t < 5.8) {
+            const p = smoothStep((t - 4.55) / 1.25);
+            forwardRoll = (1 - p) * (Math.PI * 2 + THREE.MathUtils.degToRad(40));
+        } else {
+            const fade = 1 - smoothStep((t - 5.8) / 1.4);
+            nod = Math.sin((t - 5.8) * Math.PI * 1.5) * 0.12 * fade;
+        }
+
+        // Небольшие прыжки с меняющейся длительностью и высотой.
+        const jumpTime = elapsed;
+        const jumpA = Math.max(0, Math.sin(jumpTime * 2.15 + 0.2));
+        const jumpB = Math.max(0, Math.sin(jumpTime * 1.37 + 1.6));
+        const jumpC = Math.max(0, Math.sin(jumpTime * 3.05 + 2.1));
+        const jump = Math.pow(jumpA, 7) * 0.10 + Math.pow(jumpB, 11) * 0.055 + Math.pow(jumpC, 15) * 0.025;
+
+        // «Нет» — поворот головы вокруг вертикальной оси Y, без крена вбок.
+        verityRoot.rotation.set(forwardRoll, nod, 0);
+        verityRoot.position.y = jump;
 
 // Анимация огненной ауры
 if (auraGroup.visible) {
@@ -1126,9 +1378,10 @@ if (auraGroup.visible) {
         renderer.render(scene, camera);
     }
 
-    animate();
+    startLoop();
 
     window.verityModel = verity;
+    window.verityRoot = verityRoot;
 }
 </script>
 

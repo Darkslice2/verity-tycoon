@@ -1,5 +1,152 @@
 (() => {
   "use strict";
+ // ===== YANDEX GAMES SDK =====
+
+let ysdk = null;
+let yandexSDKReady = false;
+let payments = null;
+let gemCatalog = [];
+let player = null;
+let rewardedAdActive = false;
+let cloudSaveAvailable = false;
+let cloudSaveQueue = Promise.resolve();
+let clickSaveTimer = null;
+let renderedActiveSkin = null;
+async function saveCloudState(flush = false) {
+  if (!player || !cloudSaveAvailable) {
+    throw new Error("Облачное сохранение недоступно");
+  }
+
+  // Сериализуем записи, чтобы сохранения не перезаписывали друг друга.
+  const saveTask = cloudSaveQueue.then(async () => {
+    await player.setData(
+      { gameSave: state },
+      flush
+    );
+  });
+
+  // Ошибка одной записи не должна навсегда блокировать очередь.
+  cloudSaveQueue = saveTask.catch(error => {
+    console.error("Ошибка очереди облачных сохранений:", error);
+  });
+
+  await saveTask;
+}
+async function loadCloudSave() {
+  if (!player) return;
+
+  try {
+    const cloudData = await player.getData(["gameSave"]);
+    const cloudState = cloudData.gameSave;
+
+    if (!cloudState) {
+      // Облачного сохранения ещё нет.
+      // Загружаем туда текущее локальное.
+      await player.setData(
+        { gameSave: state },
+        true
+      );
+
+      console.log("Создано первое облачное сохранение.");
+      cloudSaveAvailable = true;
+      return;
+    }
+
+    const localTime = Number(state.lastSave) || 0;
+    const cloudTime = Number(cloudState.lastSave) || 0;
+
+    if (cloudTime > localTime) {
+      // Облако новее локального сохранения.
+      state = {
+        ...state,
+        ...cloudState,
+
+        employees: {
+          ...state.employees,
+          ...(cloudState.employees || {})
+        },
+
+        permanent: {
+          ...state.permanent,
+          ...(cloudState.permanent || {})
+        },
+
+        extraUpgrades: {
+          ...state.extraUpgrades,
+          ...(cloudState.extraUpgrades || {})
+        },
+
+        skins: Array.isArray(cloudState.skins)
+          ? [...new Set(["default", ...cloudState.skins])]
+          : ["default"],
+
+        processedPurchases: Array.isArray(cloudState.processedPurchases)
+          ? cloudState.processedPurchases
+          : []
+      };
+
+      console.log("Загружено более новое облачное сохранение.");
+    } else {
+      // Локальное сохранение новее или равно облачному.
+      await player.setData(
+        { gameSave: state },
+        true
+      );
+
+      console.log("Локальное сохранение синхронизировано с облаком.");
+    }
+
+    cloudSaveAvailable = true;
+
+  } catch (error) {
+    console.error("Ошибка загрузки облачного сохранения:", error);
+    cloudSaveAvailable = false;
+  }
+}
+
+
+async function initYandexSDK() {
+  if (!window.YaGames) {
+    console.warn("Yandex Games SDK не найден. Работаем в обычном режиме.");
+    return;
+  }
+
+  try {
+    ysdk = await YaGames.init();
+
+    window.ysdk = ysdk;
+    yandexSDKReady = true;
+    // Получаем объект игрока Яндекса.
+    player = await ysdk.getPlayer();
+
+    // Загружаем облачное сохранение до запуска игры.
+    await loadCloudSave();
+    console.log("Yandex Games SDK успешно подключён!");
+
+    try {
+      payments = await ysdk.getPayments();
+
+      console.log("Платежи Яндекс Игр подключены!");
+
+      gemCatalog = await payments.getCatalog();
+
+      console.log("Каталог покупок:", gemCatalog);
+
+      renderAll();
+
+      await restoreGemPurchases();
+
+    } catch (paymentError) {
+      console.error("Ошибка подключения платежей:", paymentError);
+      notify("Магазин временно недоступен.");
+    }
+
+  } catch (error) {
+    console.error("Ошибка инициализации Yandex SDK:", error);
+  }
+}
+const yandexSDKPromise = initYandexSDK();
+// ===== END YANDEX GAMES SDK =====
   // система комбо и критических кликов
   let clickCombo = 0;
   let lastClickTime = 0;
@@ -35,7 +182,7 @@
 const characters = [
   {
     id: "verity",
-    name: "Verity",
+    name: "Верити",
     face: "☺",
     role: "Основатель фабрики",
     income: 1,
@@ -45,8 +192,8 @@ const characters = [
   },
   {
     id: "falsity",
-    name: "Falsity",
-    face: "☻",
+    name: "Фолсити",
+    face: "☺",
     role: "Специалист по производству",
     income: 5,
     price: 100,
@@ -55,8 +202,8 @@ const characters = [
   },
   {
     id: "cruelty",
-    name: "Cruelty",
-    face: "♠",
+    name: "Круэлти",
+    face: "☺",
     role: "Ускоряет производственные линии",
     income: 25,
     price: 750,
@@ -65,8 +212,8 @@ const characters = [
   },
   {
     id: "lovity",
-    name: "Lovity",
-    face: "♥",
+    name: "Ловити",
+    face: "☺",
     role: "Заботится о благополучии фабрики",
     income: 120,
     price: 5000,
@@ -75,8 +222,8 @@ const characters = [
   },
   {
     id: "obesity",
-    name: "Obesity",
-    face: "●",
+    name: "Обесити",
+    face: "☺",
     role: "Отвечает за тяжёлое производство",
     income: 600,
     price: 35000,
@@ -85,8 +232,8 @@ const characters = [
   },
   {
     id: "mogity",
-    name: "Mogity",
-    face: "猫",
+    name: "Могсити",
+    face: "☺",
     role: "Легенда промышленности",
     income: 3000,
     price: 250000,
@@ -97,20 +244,52 @@ const characters = [
 
   const veritySkins = [
     { id: "default", name: "Классический", source: "verity", background: "#ffd84d" },
-    { id: "falsity", name: "Falsity", source: "falsity", background: "linear-gradient(135deg,#b99aff,#7550c9)" },
-    { id: "cruelty", name: "Cruelty", source: "cruelty", background: "linear-gradient(135deg,#ff7777,#8f263e)" },
-    { id: "lovity", name: "Lovity", source: "lovity", background: "linear-gradient(135deg,#ff91c8,#b94d83)" },
-    { id: "obesity", name: "Obesity", source: "obesity", background: "linear-gradient(135deg,#8bd5a7,#368b65)" },
-    { id: "mogity", name: "Mogity", source: "mogity", background: "linear-gradient(135deg,#83cfff,#357db5)" },
-    { id: "drip", name: "Drip Verity", source: "shop", background: "linear-gradient(135deg,#b99aff,#ff91c8)" }
+    { id: "falsity", name: "Фолсити", source: "Фолсити", background: "linear-gradient(135deg,#b99aff,#7550c9)" },
+    { id: "cruelty", name: "Круэлти", source: "Круэлти", background: "linear-gradient(135deg,#ff7777,#8f263e)" },
+    { id: "lovity", name: "Ловити", source: "Ловити", background: "linear-gradient(135deg,#ff91c8,#b94d83)" },
+    { id: "obesity", name: "Ларпити", source: "Ларпити", background: "linear-gradient(135deg,#7cff36,#20c900)" },
+    { id: "mogity", name: "Могити", source: "Могити", background: "linear-gradient(135deg,#83cfff,#357db5)" },
+    { id: "drip", name: "Дрип Верити", source: "остальных. Дрип Верити есть в магазине", background: "linear-gradient(135deg,#b99aff,#ff91c8)" }
   ];
 
   const extraUpgradeDefinitions = [
-    { id: "clickBoost", icon: "👆", name: "Усиленный палец", description: "+25% к силе клика за уровень.", base: 250, growth: 1.75, max: 30 },
-    { id: "factoryBoost", icon: "⚙️", name: "Оптимизация линии", description: "+15% к производству за уровень.", base: 500, growth: 1.85, max: 30 },
-    { id: "staffBoost", icon: "👥", name: "Обучение сотрудников", description: "+10% к доходу сотрудников за уровень.", base: 1200, growth: 1.9, max: 25 },
-    { id: "offlineBoost", icon: "🌙", name: "Ночное дежурство", description: "+1 час к лимиту офлайн-дохода за уровень.", base: 2500, growth: 2, max: 12 }
-  ];
+    {
+        id: "clickBoost",
+        icon: "👆",
+        name: "Усиленный палец",
+        description: "+20% к силе клика за уровень.",
+        base: 500,
+        growth: 1.8,
+        max: 20
+    },
+    {
+        id: "factoryBoost",
+        icon: "⚙️",
+        name: "Оптимизация линии",
+        description: "+10% к производству за уровень.",
+        base: 1000,
+        growth: 1.9,
+        max: 20
+    },
+    {
+        id: "staffBoost",
+        icon: "👥",
+        name: "Обучение сотрудников",
+        description: "+8% к доходу за уровень.",
+        base: 2000,
+        growth: 1.95,
+        max: 20
+    },
+    {
+        id: "offlineBoost",
+        icon: "🌙",
+        name: "Ночное дежурство",
+        description: "+1 час к лимиту офлайн-дохода за уровень.",
+        base: 3000,
+        growth: 2,
+        max: 8
+    }
+];
 
 
   const shopItems = [
@@ -151,17 +330,62 @@ const characters = [
     }
   ];
 
-  const wheelPrizes = [
-    { name: "5 000 ◈", type: "money", value: 5000, weight: 30 },
-    { name: "20 000 ◈", type: "money", value: 20000, weight: 20 },
-    { name: "75 000 ◈", type: "money", value: 75000, weight: 8 },
-    { name: "15 Gems", type: "gems", value: 15, weight: 15 },
-    { name: "50 Gems", type: "gems", value: 50, weight: 5 },
-    { name: "Ускорение 5 минут", type: "boost", value: 5, weight: 15 },
-    { name: "1 Rebirth Token", type: "token", value: 1, weight: 7 }
-  ];
+  
+const wheelPrizes = [
+    {
+        name: "500 ◈",
+        type: "money",
+        value: 500,
+        weight: 30,
+        image: "images/roulette/money-small.png"
+    },
+    {
+        name: "2 500 ◈",
+        type: "money",
+        value: 2500,
+        weight: 20,
+        image: "images/roulette/money-medium.png"
+    },
+    {
+        name: "10 000 ◈",
+        type: "money",
+        value: 10000,
+        weight: 5,
+        image: "images/roulette/money-large.png"
+    },
+    {
+        name: "10 Гемов",
+        type: "gems",
+        value: 10,
+        weight: 20,
+        image: "images/roulette/gems-small.png"
+    },
+    {
+        name: "30 Гемов",
+        type: "gems",
+        value: 30,
+        weight: 8,
+        image: "images/roulette/gems-large.png"
+    },
+    {
+        name: "Ускорение 5 минут",
+        type: "boost",
+        value: 5,
+        weight: 15,
+        image: "images/roulette/boost.png"
+    },
+    {
+        name: "1 Токен перерождения",
+        type: "token",
+        value: 1,
+        weight: 2,
+        image: "images/roulette/token.png"
+    }
+];
+
 
   const defaultState = {
+    processedPurchases: [],
     money: 0,
     gemBalance: 0,
     starterPackClaimed: false,
@@ -199,33 +423,46 @@ const characters = [
   let lastTick = Date.now();
 
   function loadGame() {
-    try {
-      const raw = localStorage.getItem(SAVE_KEY);
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
 
-      if (!raw) return structuredClone(defaultState);
+    if (!raw) return structuredClone(defaultState);
 
-      const saved = JSON.parse(raw);
+    const saved = JSON.parse(raw);
 
-      return {
-        ...structuredClone(defaultState),
-        ...saved,
-        employees: {
-          ...defaultState.employees,
-          ...(saved.employees || {})
-        },
-        permanent: {
-          ...defaultState.permanent,
-          ...(saved.permanent || {})
-        },
-        skins: Array.isArray(saved.skins) ? [...new Set(["default", ...saved.skins])] : ["default"],
-        extraUpgrades: { ...defaultState.extraUpgrades, ...(saved.extraUpgrades || {}) },
-        starterPackClaimed: typeof saved.starterPackClaimed === "boolean" ? saved.starterPackClaimed : true
-      };
-    } catch (error) {
-      console.error("Ошибка загрузки сохранения:", error);
-      return structuredClone(defaultState);
-    }
+    return {
+      ...structuredClone(defaultState),
+      ...saved,
+      employees: {
+        ...defaultState.employees,
+        ...(saved.employees || {})
+      },
+      permanent: {
+        ...defaultState.permanent,
+        ...(saved.permanent || {})
+      },
+      skins: Array.isArray(saved.skins)
+        ? [...new Set(["default", ...saved.skins])]
+        : ["default"],
+      extraUpgrades: {
+        ...defaultState.extraUpgrades,
+        ...(saved.extraUpgrades || {})
+      },
+      starterPackClaimed:
+        typeof saved.starterPackClaimed === "boolean"
+          ? saved.starterPackClaimed
+          : true,
+
+      // Защита от повторного начисления покупок.
+      processedPurchases: Array.isArray(saved.processedPurchases)
+        ? saved.processedPurchases
+        : []
+    };
+  } catch (error) {
+    console.error("Ошибка загрузки сохранения:", error);
+    return structuredClone(defaultState);
   }
+}
   function showClickBoost() {
     let indicator = document.getElementById("click-boost-indicator");
 
@@ -251,25 +488,6 @@ const characters = [
     }
 
     clearInterval(boostDisplayTimer);
-function toggleBackgroundMusic() {
-    musicEnabled = !musicEnabled;
-
-    const button = $("musicToggle");
-
-    if (musicEnabled) {
-        if (button) button.textContent = "♫";
-
-        backgroundMusic.volume = 0;
-        startBackgroundMusic();
-    } else {
-        if (button) button.textContent = "🔇";
-
-        backgroundMusic.pause();
-        backgroundMusic.currentTime = 0;
-        backgroundMusic.volume = 0;
-        musicStarted = false;
-    }
-}
 
     function update() {
         const remaining = Math.max(0, clickBoostUntil - Date.now());
@@ -327,14 +545,39 @@ function toggleBackgroundMusic() {
 
     requestAnimationFrame(animate);
 }
-  function saveGame() {
-    state.lastSave = Date.now();
 
-    try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify(state));
-    } catch (error) {
-      console.error("Ошибка сохранения:", error);
-    }
+  function saveGame() {
+  state.lastSave = Date.now();
+
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+  } catch (error) {
+    console.error("Ошибка локального сохранения:", error);
+    return;
+  }
+
+  // Обычное облачное сохранение без принудительного ожидания записи.
+  if (player && cloudSaveAvailable) {
+    saveCloudState(false).catch(error => {
+      console.error("Не удалось сохранить прогресс в облаке:", error);
+    });
+  }
+}
+
+  // Клики не должны синхронно сериализовать всё состояние и писать его
+  // в localStorage. Сохраняем после короткой паузы; периодическое и важное
+  // сохранение через saveGame() остаётся без изменений.
+  function scheduleClickSave() {
+    if (clickSaveTimer !== null) clearTimeout(clickSaveTimer);
+    clickSaveTimer = setTimeout(() => {
+      clickSaveTimer = null;
+      try {
+        state.lastSave = Date.now();
+        localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+      } catch (error) {
+        console.error("Ошибка отложенного локального сохранения:", error);
+      }
+    }, 500);
   }
 
   function notify(message) {
@@ -364,13 +607,13 @@ function toggleBackgroundMusic() {
 
   function getIncomeMultiplier() {
     return (
-      (1 + state.rebirths * 0.2) *
-      (1 + state.permanent.income * 0.25) *
-      (1 + state.beltLevel * 0.25) *
-      (1 + (state.extraUpgrades.factoryBoost || 0) * 0.15) *
-      (1 + (state.extraUpgrades.staffBoost || 0) * 0.10)
+        (1 + state.rebirths * 0.15) *
+        (1 + state.permanent.income * 0.20) *
+        (1 + state.beltLevel * 0.12) *
+        (1 + (state.extraUpgrades.factoryBoost || 0) * 0.10) *
+        (1 + (state.extraUpgrades.staffBoost || 0) * 0.08)
     );
-  }
+}
 
   function getProduction() {
     let base = 0;
@@ -402,21 +645,22 @@ function toggleBackgroundMusic() {
   }
 
   function getClickCost() {
-    return Math.floor(25 * Math.pow(1.65, state.clickLevel - 1));
-  }
+    return Math.floor(40 * Math.pow(1.55, state.clickLevel - 1));
+}
 
-  function getBeltCost() {
-    return Math.floor(50 * Math.pow(1.8, state.beltLevel));
-  }
+function getBeltCost() {
+    return Math.floor(150 * Math.pow(1.7, state.beltLevel));
+}
 
   function getCharacterPrice(character) {
     const owned = state.employees[character.id] || 0;
 
     return Math.floor(
-      character.price * Math.pow(1.18, owned) *
-      Math.pow(1.5, state.rebirths)
+        character.price *
+        Math.pow(1.30, owned) *
+        Math.pow(1.45, state.rebirths)
     );
-  }
+}
 
   // --------------------------------------------------
   // СОЗДАНИЕ НЕДОСТАЮЩИХ СТРАНИЦ И НАВИГАЦИИ
@@ -451,7 +695,7 @@ function toggleBackgroundMusic() {
               <div class="section-title" id="rebirthCount">0</div>
             </div>
             <div class="upgrade-card">
-              <div class="muted">Rebirth Tokens</div>
+              <div class="muted">Токены перерождения</div>
               <div class="section-title" id="tokenBalance">0</div>
             </div>
           </div>
@@ -473,7 +717,7 @@ function toggleBackgroundMusic() {
         <section class="panel" style="margin-top:20px">
           <div class="section-title">Постоянные улучшения</div>
           <p class="muted">
-            Покупаются за Rebirth Tokens и сохраняются после перерождения.
+            Покупаются за Токены перерождения и сохраняются после перерождения.
           </p>
           <div id="permanentUpgrades" class="upgrades"></div>
         </section>
@@ -518,7 +762,7 @@ function toggleBackgroundMusic() {
                 </button>
 
                 <button type="button" class="secondary-btn" id="paidSpinButton">
-                КРУТИТЬ ЗА 25 GEMS
+                КРУТИТЬ ЗА 25 ГЕМОВ
                 </button>
             </div>
 
@@ -630,12 +874,6 @@ function toggleBackgroundMusic() {
       .skin-swatch { display:block; width:28px; height:28px; border-radius:50%; margin:0 auto 6px; border:2px solid #ffffff55; }
       .skin-option strong,.skin-option small { display:block; font-size:10px; overflow-wrap:anywhere; }
       .skin-option small { color:#aaa3b8; font-size:9px; margin-top:3px; }
-      .mascot.skin-falsity { background:linear-gradient(135deg,#b99aff,#7550c9); box-shadow:0 12px 45px #b99aff50; }
-      .mascot.skin-cruelty { background:linear-gradient(135deg,#ff7777,#8f263e); box-shadow:0 12px 45px #ff777750; }
-      .mascot.skin-lovity { background:linear-gradient(135deg,#ff91c8,#b94d83); box-shadow:0 12px 45px #ff91c850; }
-      .mascot.skin-obesity { background:linear-gradient(135deg,#8bd5a7,#368b65); box-shadow:0 12px 45px #8bd5a750; }
-      .mascot.skin-mogity { background:linear-gradient(135deg,#83cfff,#357db5); box-shadow:0 12px 45px #83cfff50; }
-      .mascot.skin-drip { background:linear-gradient(135deg,#b99aff,#ff91c8); box-shadow:0 12px 45px #b99aff50; }
       .extra-upgrades-wrap { margin-top:14px; }
       .extra-upgrades-list { display:flex; flex-direction:column; gap:10px; max-height:380px; overflow-y:auto; padding:2px 7px 2px 0; overscroll-behavior:contain; }
       .extra-upgrade-card { background:#242032; border:1px solid #373149; border-radius:12px; padding:13px; }
@@ -693,7 +931,35 @@ function toggleBackgroundMusic() {
 
   function setText(id, value) {
     const element = $(id);
-    if (element) element.textContent = value;
+    if (element && element.textContent !== String(value)) {
+      element.textContent = value;
+    }
+  }
+
+  // Пересобирает DOM только если разметка реально изменилась: раз в секунду
+  // игра перерисовывала все списки целиком, даже когда ничего не поменялось.
+  function setHTML(element, html) {
+    if (element.__lastHTML === html) return;
+    element.__lastHTML = html;
+    element.innerHTML = html;
+  }
+
+  // Лёгкое обновление интерфейса после клика: не трогаем скины,
+  // 3D-текстуры и остальные элементы, которые не меняются от нажатия.
+  function renderClickHud() {
+    setText("money", format(state.money));
+
+    const goal = getRebirthRequirement();
+    const progress = clamp(state.money / goal * 100, 0, 100);
+    setText("goalText", `${format(state.money)} / ${format(goal)} ◈`);
+
+    const goalBar = $("goalBar");
+    if (goalBar) goalBar.style.width = progress + "%";
+
+    const buyClick = $("buyClick");
+    const buyBelt = $("buyBelt");
+    if (buyClick) buyClick.disabled = state.money < getClickCost();
+    if (buyBelt) buyBelt.disabled = state.money < getBeltCost();
   }
 
   function renderTop() {
@@ -723,19 +989,21 @@ function toggleBackgroundMusic() {
 
     setText("productionText", `Производство: ${format(production)} ◈/сек`);
 
-    const goal = 1000 * Math.pow(2, state.rebirths);
-    const progress = clamp(state.money / goal * 100, 0, 100);
+    const goal = getRebirthRequirement();
+      const progress = clamp(state.money / goal * 100, 0, 100);
 
-    setText("goalText", `${format(state.money)} / ${format(goal)} ◈`);
+      setText("goalText", `${format(state.money)} / ${format(goal)} ◈`);
 
-    if ($("goalBar")) {
-      $("goalBar").style.width = progress + "%";
-    }
+      if ($("goalBar")) {
+        $("goalBar").style.width = progress + "%";
+      }
 
     const mascot = $("verity");
 
     
 if (mascot) {
+    if (mascot.__skinClass !== state.activeSkin) {
+    mascot.__skinClass = state.activeSkin;
     mascot.classList.remove(
         "drip",
         "skin-falsity",
@@ -749,16 +1017,21 @@ if (mascot) {
     if (state.activeSkin !== "default") {
         mascot.classList.add("skin-" + state.activeSkin);
     }
+}
 
     // Не перезаписываем содержимое 3D-контейнера!
-    if (!document.getElementById("verity-3d")) {
-        mascot.textContent = state.activeSkin === "default"
-            ? "☺"
-            : (characters.find(character => character.id === state.activeSkin)?.face || "☺");
-    }
+    const verityMount = document.getElementById("verity-3d");
+
+      if (!verityMount && mascot) {
+          console.warn("Контейнер 3D Верити не найден. Текстовый fallback отключён.");
+      }
 
     if (window.setVeritySkin) {
-    window.setVeritySkin(state.activeSkin || "default");
+    const activeSkin = state.activeSkin || "default";
+    if (renderedActiveSkin !== activeSkin) {
+        renderedActiveSkin = activeSkin;
+        window.setVeritySkin(activeSkin);
+    }
 
     if (Date.now() < clickBoostUntil && window.setVerityHappy) {
         window.setVerityHappy(true);
@@ -797,7 +1070,7 @@ if (mascot) {
   function renderExtraUpgrades() {
     const container = $("extraUpgrades");
     if (!container) return;
-    container.innerHTML = extraUpgradeDefinitions.map(upgrade => {
+    setHTML(container, extraUpgradeDefinitions.map(upgrade => {
       const level = state.extraUpgrades[upgrade.id] || 0;
       const price = Math.floor(upgrade.base * Math.pow(upgrade.growth, level));
       const maxed = level >= upgrade.max;
@@ -812,7 +1085,7 @@ if (mascot) {
           <button type="button" class="primary-btn" data-action="buy-extra-upgrade" data-id="${upgrade.id}" ${maxed || state.money < price ? "disabled" : ""}>${maxed ? "МАКСИМУМ" : "УЛУЧШИТЬ"}</button>
         </div>
       </div>`;
-    }).join("");
+    }).join(""));
   }
 
   function buyExtraUpgrade(id) {
@@ -843,7 +1116,7 @@ if (mascot) {
     const container = $("characters");
     if (!container) return;
 
-    container.innerHTML = characters.map(character => {
+    setHTML(container, characters.map(character => {
         const owned = state.employees[character.id] || 0;
         const price = getCharacterPrice(character);
 
@@ -861,7 +1134,7 @@ if (mascot) {
         } else if (!unlocked) {
         buttonHTML = `
             <button class="secondary-btn" disabled style="width:100%">
-            REBIRTH ${character.rebirthRequired}
+            ПЕРЕРОЖДЕНИЕ ${character.rebirthRequired}
             </button>
             <div class="muted" style="margin-top:8px;text-align:center">
             Откроется после ${character.rebirthRequired} перерождений
@@ -902,77 +1175,136 @@ if (mascot) {
             ${buttonHTML}
         </div>
         `;
-    }).join("");
+    }).join(""));
     }
 
+    const GEM_PRODUCTS = {
+      gems_250: 250,
+      gems_600: 600,
+      gems_1500: 1500,
+      gems_3500: 3500
+    };
 
-  function renderShop() {
-    const container = $("shopItems");
-    const packs = $("gemPacks");
+    const GEM_PACKAGE_IDS = {
+      1: "gems_250",
+      2: "gems_600",
+      3: "gems_1500",
+      4: "gems_3500"
+    };
 
-    if (container) {
-      container.innerHTML = shopItems.map(item => {
-        const owned = item.type === "skin" &&
-          state.skins.includes("drip");
+  
+function renderShop() {
+  const container = $("shopItems");
+  const packs = $("gemPacks");
 
-        return `
-          <div class="shop-card">
-            <div class="shop-card-icon">${item.icon}</div>
-            <h3>${item.name}</h3>
-            <p>${item.description}</p>
+  if (container) {
+    setHTML(container, shopItems.map(item => {
+      const owned = item.type === "skin" &&
+        state.skins.includes("drip");
 
-            <div class="shop-card-bottom">
-              <span class="gem-price">${item.price} Gems</span>
+      return `
+        <div class="shop-card">
+          <div class="shop-card-icon">${item.icon}</div>
+          <h3>${item.name}</h3>
+          <p>${item.description}</p>
 
-              <button
-                type="button"
-                class="primary-btn"
-                data-action="buy-shop"
-                data-id="${item.id}"
-                ${owned || state.gemBalance < item.price ? "disabled" : ""}
-              >
-                ${owned ? "КУПЛЕНО" : "КУПИТЬ"}
-              </button>
-            </div>
+          <div class="shop-card-bottom">
+            <span class="gem-price">${item.price} ГЕМОВ</span>
+
+            <button
+              type="button"
+              class="primary-btn"
+              data-action="buy-shop"
+              data-id="${item.id}"
+              ${owned || state.gemBalance < item.price ? "disabled" : ""}
+            >
+              ${owned ? "КУПЛЕНО" : "КУПИТЬ"}
+            </button>
           </div>
-        `;
-      }).join("");
-    }
-
-    if (packs) {
-      const gemPackages = [
-        { gems: 100, bonus: "Стартовый набор", starter: true },
-        { gems: 500, bonus: "Средний набор", starter: false },
-        { gems: 1500, bonus: "Большой набор", starter: false }
-      ];
-      packs.innerHTML = gemPackages.map((pack, index) => {
-        const claimed = pack.starter && state.starterPackClaimed;
-        return `<div class="gem-pack">
-          <h3>${format(pack.gems)} Gems</h3><p>${pack.bonus}</p>
-          <button type="button" class="primary-btn" data-action="buy-gems" data-index="${index}" ${claimed ? "disabled" : ""}>
-            ${claimed ? "УЖЕ ПОЛУЧЕН" : pack.starter ? "ПОЛУЧИТЬ" : "ДЕМО"}
-          </button>
-        </div>`;
-      }).join("");
-    }
+        </div>
+      `;
+    }).join(""));
   }
+
+  if (packs) {
+    const gemPackages = [
+      { gems: 100, bonus: "Стартовый набор", starter: true },
+      { gems: 250, bonus: "Маленький набор", price: 49 },
+      { gems: 600, bonus: "Средний набор", price: 99 },
+      { gems: 1500, bonus: "Большой набор", price: 199 },
+      { gems: 3500, bonus: "Огромный набор", price: 399 }
+    ];
+
+    packs.innerHTML = gemPackages.map((pack, index) => {
+      const claimed = pack.starter && state.starterPackClaimed;
+
+      const productId = GEM_PACKAGE_IDS[index];
+
+      const catalogProduct = productId
+        ? gemCatalog.find(item => item.id === productId)
+        : null;
+
+      const displayPrice = catalogProduct
+        ? catalogProduct.price
+        : `${pack.price} ₽`;
+
+      return `
+        <div class="gem-pack">
+          <h3>${format(pack.gems)} ГЕМОВ</h3>
+          <p>${pack.bonus}</p>
+
+          <button
+            type="button"
+            class="primary-btn"
+            data-action="buy-gems"
+            data-index="${index}"
+            ${claimed ? "disabled" : ""}
+          >
+            ${
+              claimed
+                ? "УЖЕ ПОЛУЧЕН"
+                : pack.starter
+                  ? "ПОЛУЧИТЬ"
+                  : displayPrice
+            }
+          </button>
+        </div>
+      `;
+    }).join("");
+
+    packs.innerHTML += `
+      <div class="gem-pack ad-gem-pack">
+        <h3>+20 ГЕМОВ</h3>
+        <p>Награда за просмотр рекламы</p>
+        <button
+          type="button"
+          class="primary-btn"
+          data-action="watch-gem-ad"
+        >
+          СМОТРЕТЬ РЕКЛАМУ
+        </button>
+      </div>
+    `;
+  }
+}
+
 
   // --------------------------------------------------
   // REBIRTH
   // --------------------------------------------------
 
   function getRebirthRequirement() {
-    return Math.floor(100000 * Math.pow(4, state.rebirths));
-  }
+    return Math.floor(250000 * Math.pow(3.5, state.rebirths));
+}
 
-  function getRebirthReward() {
+function getRebirthReward() {
     const requirement = getRebirthRequirement();
 
     return Math.max(
-      1,
-      Math.floor(1 + Math.sqrt(state.money / requirement))
+        1,
+        Math.floor(Math.sqrt(state.money / requirement))
     );
-  }
+}
 
   function renderRebirth() {
     const requirement = getRebirthRequirement();
@@ -993,7 +1325,7 @@ if (mascot) {
 
     setText(
       "rebirthBonus",
-      `Награда: ${getRebirthReward()} Rebirth Token. Каждый Rebirth увеличивает производство на 20%.`
+      `Награда: ${getRebirthReward()} Токенов перерождения. Каждое перерождение увеличивает производство на 20%.`
     );
 
     if ($("rebirthBar")) {
@@ -1034,7 +1366,7 @@ if (mascot) {
       }
     ];
 
-    container.innerHTML = upgrades.map(upgrade => {
+    setHTML(container, upgrades.map(upgrade => {
       const level = state.permanent[upgrade.id] || 0;
       const price = upgrade.base * Math.pow(2, level);
       const maxed = level >= upgrade.max;
@@ -1060,51 +1392,60 @@ if (mascot) {
           </button>
         </div>
       `;
-    }).join("");
+    }).join(""));
   }
 
-  function doRebirth() {
+  
+function doRebirth() {
     const requirement = getRebirthRequirement();
 
     if (state.money < requirement) {
-      notify("Недостаточно ресурсов!");
-      return;
+        notify("Недостаточно ресурсов!");
+        return;
     }
 
     const reward = getRebirthReward();
 
-    const confirmed = confirm(
-      `Переродиться?\n\nТы получишь ${reward} Rebirth Token.\nДеньги, сотрудники и обычные улучшения будут сброшены.`
+    confirmAction(
+        "Перерождение",
+        `Ты получишь ${reward} Токенов перерождения. Деньги, сотрудники и обычные улучшения будут сброшены. Продолжить?`,
+        () => {
+            state.tokens += reward;
+            state.rebirths += 1;
+
+            state.money = 0;
+            state.totalEarned = 0;
+
+            state.employees = {
+                verity: 1,
+                falsity: 0,
+                cruelty: 0,
+                lovity: 0,
+                obesity: 0,
+                mogity: 0
+            };
+
+            state.clickLevel = 1;
+            state.beltLevel = 0;
+
+            state.extraUpgrades = {
+                clickBoost: 0,
+                factoryBoost: 0,
+                staffBoost: 0,
+                offlineBoost: 0
+            };
+
+            state.boostUntil = 0;
+            state.boostMultiplier = 1;
+
+            saveGame();
+            renderAll();
+
+            notify(`Перерождение! +${reward} Token`);
+        }
     );
+}
 
-    if (!confirmed) return;
-
-    state.tokens += reward;
-    state.rebirths += 1;
-
-    state.money = 0;
-    state.totalEarned = 0;
-
-    state.employees = {
-      verity: 1,
-      falsity: 0,
-      cruelty: 0,
-      lovity: 0,
-      obesity: 0,
-      mogity: 0
-    };
-
-    state.clickLevel = 1;
-    state.beltLevel = 0;
-    state.extraUpgrades = { clickBoost: 0, factoryBoost: 0, staffBoost: 0, offlineBoost: 0 };
-    state.boostUntil = 0;
-    state.boostMultiplier = 1;
-
-    saveGame();
-    renderAll();
-
-    notify(`Перерождение! +${reward} Token`);
-  }
 
   function buyPermanent(id) {
     const settings = {
@@ -1126,7 +1467,7 @@ if (mascot) {
     const price = upgrade.base * Math.pow(2, level);
 
     if (state.tokens < price) {
-      notify("Недостаточно Rebirth Tokens!");
+      notify("Недостаточно Токенов перерождения!");
       return;
     }
 
@@ -1140,7 +1481,7 @@ if (mascot) {
   }
 
   // --------------------------------------------------
-  // БУРМАЛДА
+  // РУЛЕТКА
   // --------------------------------------------------
 
   function canFreeSpin() {
@@ -1183,6 +1524,7 @@ if (mascot) {
         ? "У тебя доступно бесплатное вращение!"
         : "Бесплатное вращение обновится через 24 часа."
     );
+    renderRouletteWheel();
     }
 
 
@@ -1203,31 +1545,399 @@ if (mascot) {
   }
 
   
+function showRouletteWinEffects() {
+    const track = $("rouletteTrack");
+    if (!track) return;
+
+    const windowElement = track.parentElement;
+    if (!windowElement) return;
+
+    // Контейнер эффектов
+    const overlay = document.createElement("div");
+
+    overlay.style.cssText = `
+        position: absolute !important;
+        inset: 0 !important;
+        z-index: 30 !important;
+        overflow: hidden !important;
+        border-radius: 50% !important;
+        pointer-events: none !important;
+    `;
+
+    windowElement.appendChild(overlay);
+
+    // Золотая вспышка
+    const flash = document.createElement("div");
+
+    flash.style.cssText = `
+        position: absolute !important;
+        inset: 0 !important;
+        border-radius: 50% !important;
+        background: radial-gradient(
+            circle,
+            rgba(255, 238, 170, 0.75) 0%,
+            rgba(255, 190, 70, 0.25) 35%,
+            transparent 72%
+        ) !important;
+        opacity: 0 !important;
+    `;
+
+    overlay.appendChild(flash);
+
+    flash.animate(
+        [
+            { opacity: 0 },
+            { opacity: 1, offset: 0.25 },
+            { opacity: 0 }
+        ],
+        {
+            duration: 1100,
+            easing: "ease-out"
+        }
+    );
+
+    // Конфетти
+    const confettiColors = [
+        "#ffe08a",
+        "#ffffff",
+        "#c084fc",
+        "#facc15",
+        "#fb7185",
+        "#67e8f9"
+    ];
+
+    for (let i = 0; i < 55; i++) {
+        const piece = document.createElement("div");
+
+        const size = 5 + Math.random() * 8;
+        const startX = 50 + (Math.random() - 0.5) * 55;
+        const startY = 45 + (Math.random() - 0.5) * 30;
+
+        piece.style.cssText = `
+            position: absolute !important;
+            left: ${startX}% !important;
+            top: ${startY}% !important;
+            width: ${size}px !important;
+            height: ${size * (1 + Math.random())}px !important;
+            border-radius: ${Math.random() > 0.5 ? "50%" : "2px"} !important;
+            background: ${confettiColors[
+                Math.floor(Math.random() * confettiColors.length)
+            ]} !important;
+            box-shadow: 0 0 7px rgba(255, 220, 130, 0.7) !important;
+        `;
+
+        overlay.appendChild(piece);
+
+        const driftX = (Math.random() - 0.5) * 380;
+        const fallY = 180 + Math.random() * 350;
+        const rotation = Math.random() * 1000 - 500;
+
+        piece.animate(
+            [
+                {
+                    transform: "translate(0, 0) rotate(0deg) scale(0.5)",
+                    opacity: 0
+                },
+                {
+                    transform: `translate(${driftX * 0.25}px, -35px) rotate(${rotation * 0.3}deg) scale(1)`,
+                    opacity: 1,
+                    offset: 0.2
+                },
+                {
+                    transform: `translate(${driftX}px, ${fallY}px) rotate(${rotation}deg) scale(0.7)`,
+                    opacity: 0
+                }
+            ],
+            {
+                duration: 1300 + Math.random() * 900,
+                easing: "cubic-bezier(0.15, 0.7, 0.3, 1)",
+                fill: "forwards"
+            }
+        );
+    }
+
+    // Золотое свечение по краю
+    const glow = document.createElement("div");
+
+    glow.style.cssText = `
+        position: absolute !important;
+        inset: 7px !important;
+        border: 5px solid #ffe08a !important;
+        border-radius: 50% !important;
+        box-shadow:
+            0 0 15px #ffd66b,
+            0 0 35px rgba(255, 190, 60, 0.9),
+            inset 0 0 25px rgba(255, 220, 120, 0.55) !important;
+        opacity: 0 !important;
+    `;
+
+    overlay.appendChild(glow);
+
+    glow.animate(
+        [
+            { opacity: 0, transform: "scale(0.96)" },
+            { opacity: 1, transform: "scale(1)" },
+            { opacity: 0, transform: "scale(1.04)" }
+        ],
+        {
+            duration: 1500,
+            easing: "ease-out"
+        }
+    );
+
+    // Убираем эффекты после анимации
+    setTimeout(() => {
+        overlay.remove();
+    }, 2400);
+}
+
+function renderRouletteWheel() {
+    const track = $("rouletteTrack");
+    if (!track) return;
+
+    // Если колесо уже создано, повторно не строим
+    if (track.dataset.initialized === "true") return;
+
+    const sectorCount = 16;
+    const sectorSize = 360 / sectorCount;
+
+    const wheelSize = Math.min(650, window.innerWidth * 0.92);
+    const windowElement = track.parentElement;
+
+    track.innerHTML = "";
+
+    windowElement.style.cssText = `
+        position: relative !important;
+        display: block !important;
+        width: ${wheelSize}px !important;
+        height: ${wheelSize}px !important;
+        min-width: 0 !important;
+        max-width: 92vw !important;
+        margin: 35px auto 25px !important;
+        padding: 8px !important;
+        overflow: hidden !important;
+        border: 5px solid #d9ad65 !important;
+        border-radius: 50% !important;
+        box-sizing: border-box !important;
+        background: radial-gradient(circle, #49305f, #170e25) !important;
+        box-shadow:
+            0 0 0 4px #38234e,
+            0 0 0 7px #b98745,
+            0 0 28px rgba(170, 100, 255, 0.45),
+            inset 0 0 22px rgba(0, 0, 0, 0.8) !important;
+    `;
+
+    track.style.cssText = `
+        position: absolute !important;
+        display: block !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 100% !important;
+        height: 100% !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        border-radius: 50% !important;
+        box-sizing: border-box !important;
+        overflow: hidden !important;
+        transform-origin: center center !important;
+        transform: rotate(0deg) !important;
+        transition: none !important;
+    `;
+
+    const items = [];
+
+    for (let i = 0; i < sectorCount; i++) {
+        items.push(
+            wheelPrizes[Math.floor(Math.random() * wheelPrizes.length)]
+        );
+    }
+
+    const colors = [
+        "#493064",
+        "#302044",
+        "#62408a",
+        "#39254f"
+    ];
+
+    const gradient = items.map((item, index) => {
+        const start = index * sectorSize;
+        const end = (index + 1) * sectorSize;
+        return `${colors[index % colors.length]} ${start}deg ${end}deg`;
+    }).join(", ");
+
+    track.style.background = `
+        repeating-conic-gradient(
+            from 0deg,
+            transparent 0deg ${sectorSize - 0.7}deg,
+            rgba(255, 226, 170, 0.8) ${sectorSize - 0.7}deg ${sectorSize}deg
+        ),
+        conic-gradient(from 0deg, ${gradient})
+    `;
+
+    track.style.boxShadow = `
+        inset 0 0 0 3px rgba(255, 220, 160, 0.45),
+        inset 0 0 35px rgba(0, 0, 0, 0.45)
+    `;
+
+    const radius = (wheelSize - 10) * 0.34;
+
+    items.forEach((item, index) => {
+        const card = document.createElement("div");
+const angle = index * sectorSize + sectorSize / 2;
+
+card.style.cssText = `
+    position: absolute !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    left: 50% !important;
+    top: 50% !important;
+    width: 76px !important;
+    height: 88px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-radius: 12px !important;
+    
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+    background-clip: padding-box !important;
+    transform:
+        translate(-50%, -50%)
+        rotate(${angle}deg)
+        translateY(-${radius}px)
+        rotate(${-angle}deg) !important;
+`;
+
+const content = document.createElement("div");
+content.className = "roulette-card-content";
+
+content.style.cssText = `
+    width: 100% !important;
+    height: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 5px !important;
+    padding: 5px !important;
+    box-sizing: border-box !important;
+    transform: rotate(0deg);
+    transform-origin: center center !important;
+`;
+
+const icon = document.createElement("img");
+icon.src = item.image;
+icon.alt = item.name;
+
+icon.style.cssText = `
+    width: 43px !important;
+    height: 43px !important;
+    object-fit: contain !important;
+    flex-shrink: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.65)) !important;
+`;
+
+const name = document.createElement("div");
+name.className = "roulette-prize-name";
+name.textContent = item.name;
+
+name.style.cssText = `
+    width: 100% !important;
+    color: #fff4dc !important;
+    font-size: 10px !important;
+    font-weight: 900 !important;
+    line-height: 1.15 !important;
+    text-align: center !important;
+    overflow-wrap: anywhere !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.9) !important;
+`;
+
+content.appendChild(icon);
+content.appendChild(name);
+card.appendChild(content);
+track.appendChild(card);
+    });
+
+    const hub = document.createElement("div");
+
+    hub.style.cssText = `
+        position: absolute !important;
+        left: 50% !important;
+        top: 50% !important;
+        width: ${wheelSize * 0.17}px !important;
+        height: ${wheelSize * 0.17}px !important;
+        transform: translate(-50%, -50%) !important;
+        border-radius: 50% !important;
+        z-index: 15 !important;
+        pointer-events: none !important;
+        background: radial-gradient(circle at 35% 30%,
+            #fff1bd 0%, #e9bd6d 25%, #a96c2f 65%, #573019 100%
+        ) !important;
+        border: 4px solid #ffe3a1 !important;
+        box-shadow:
+            0 0 0 4px #58356e,
+            0 0 0 7px #d5a45c,
+            0 5px 15px rgba(0, 0, 0, 0.6),
+            inset 0 2px 5px rgba(255, 255, 255, 0.6) !important;
+    `;
+
+    const hubDot = document.createElement("div");
+    hubDot.style.cssText = `
+        position: absolute !important;
+        width: 28% !important;
+        height: 28% !important;
+        left: 50% !important;
+        top: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        border-radius: 50% !important;
+        background: radial-gradient(circle at 35% 30%, #fff8d8, #d49a4d) !important;
+    `;
+
+    hub.appendChild(hubDot);
+    windowElement.appendChild(hub);
+
+    const pointer = windowElement.querySelector(".roulette-pointer");
+
+    if (pointer) {
+        pointer.style.cssText = `
+            position: absolute !important;
+            top: -3px !important;
+            left: 50% !important;
+            transform: translateX(-50%) !important;
+            z-index: 25 !important;
+            font-size: 38px !important;
+            line-height: 1 !important;
+            color: #ffe08a !important;
+            -webkit-text-stroke: 1px #8a5526 !important;
+            filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.8)) !important;
+            pointer-events: none !important;
+        `;
+    }
+
+    track.dataset.initialized = "true";
+}
+
 function spinWheel(free = false) {
+    const track = $("rouletteTrack");
+    if (!track) return;
+
     if (free) {
         if (!canFreeSpin()) {
             notify("Бесплатное вращение ещё недоступно!");
             return;
         }
-        state.lastFreeSpin = Date.now();
     } else {
         if (state.gemBalance < 25) {
-            notify("Недостаточно Gems!");
+            notify("Недостаточно гемов!");
             return;
         }
-        state.gemBalance -= 25;
     }
-
-    const prize = choosePrize();
-    const rouletteStartSound = new Audio("sounds/roulette-start.mp3");
-    rouletteStartSound.volume = 0.6;
-    rouletteStartSound.play().catch(() => {});
-    state.totalSpins += 1;
-
-    const track = $("rouletteTrack");
-    if (!track) return;
-
-    const windowElement = track.parentElement;
 
     const freeButton = $("freeSpinButton");
     const paidButton = $("paidSpinButton");
@@ -1235,238 +1945,130 @@ function spinWheel(free = false) {
     if (freeButton) freeButton.disabled = true;
     if (paidButton) paidButton.disabled = true;
 
+    // Оплачиваем вращение
+    if (free) {
+        state.lastFreeSpin = Date.now();
+    } else {
+        state.gemBalance -= 25;
+    }
+
+    const prize = choosePrize();
+
+    playSound("rouletteStart", 0.6);
+
+    // Отдельного файла roulette-spin.mp3 в проекте нет, поэтому
+    // не запускаем отсутствующий аудиоресурс.
+
+    state.totalSpins += 1;
+
     setText("wheelSymbol", "🎰");
     setText("wheelResult", "Бурмалда крутится...");
-    const rouletteSpinSound = new Audio("sounds/roulette-spin.mp3");
-    rouletteSpinSound.volume = 0.35;
-    rouletteSpinSound.loop = true;
-    rouletteSpinSound.play().catch(() => {});
-        
-    track.innerHTML = "";
 
-    const cardWidth = 130;
-    const gap = 20;
-    const step = cardWidth + gap;
+//     // Подготавливаем статичное колесо
+renderRouletteWheel();
 
-    // Создаём случайные призы для ленты
-    const items = [];
+// Настройки
+const sectorCount = 16;
+const sectorSize = 360 / sectorCount;
+const winningIndex = 8;
 
-    for (let i = 0; i < 60; i++)  {
-        items.push(wheelPrizes[
-            Math.floor(Math.random() * wheelPrizes.length)
-        ]);
-    }
+const winningAngle =
+    winningIndex * sectorSize + sectorSize / 2;
 
-    // Гарантированно помещаем выигрыш в конец
-    items.push(prize);
-    for (let i = 0; i < 15; i++) {
-        items.push(wheelPrizes[
-            Math.floor(Math.random() * wheelPrizes.length)
-        ]);
-    }
-    items.forEach(item => {
-    const card = document.createElement("div");
-    card.className = "roulette-card";
+const fullRotations = 6;
 
-    const icon = document.createElement("div");
-    icon.className = "roulette-card-icon";
-    icon.textContent = item.icon || "🎁";
+const finalRotation =
+    fullRotations * 360 + (360 - winningAngle);
 
-    const name = document.createElement("div");
-    name.className = "roulette-card-name";
-    name.textContent = item.name;
+// Пересобираем только содержимое секторов под текущий выигрыш
+const items = [];
 
-    card.appendChild(icon);
-    card.appendChild(name);
-    track.appendChild(card);
-});
+for (let i = 0; i < sectorCount; i++) {
+    items.push(
+        wheelPrizes[Math.floor(Math.random() * wheelPrizes.length)]
+    );
+}
 
-  track.style.cssText = `
-    display: flex !important;
-    flex-direction: row !important;
-    flex-wrap: nowrap !important;
-    align-items: center !important;
-    gap: 12px !important;
-    width: max-content !important;
-    height: 100% !important;
-`;
+items[winningIndex] = prize;
 
-windowElement.style.webkitMaskImage = `
-    linear-gradient(
-        to right,
-        transparent 0%,
-        black 12%,
-        black 88%,
-        transparent 100%
-    )
-`;
+// Обновляем визуальные награды
+const cards = track.querySelectorAll(":scope > div");
 
-windowElement.style.maskImage = `
-    linear-gradient(
-        to right,
-        transparent 0%,
-        black 12%,
-        black 88%,
-        transparent 100%
-    )
-`;
+cards.forEach((card, index) => {
+    if (index >= sectorCount) return;
 
-Array.from(track.children).forEach(card => {
-    card.style.cssText = `
-        display: flex !important;
-        flex-direction: column !important;
-        flex: 0 0 130px !important;
-        width: 110px !important;
-        height: 90px !important;
-        min-width: 130px !important;
-        box-sizing: border-box !important;
-        margin-top: 12px !important;
-        margin-bottom: 12px !important;
-
-        align-items: center !important;
-        justify-content: center !important;
-        gap: 10px !important;
-        padding: 10px !important;
-
-        background: linear-gradient(145deg, #493064, #21152f) !important;
-        border: 2px solid #9666d5 !important;
-        border-radius: 15px !important;
-        box-shadow:
-            inset 0 2px 8px rgba(255,255,255,0.08),
-            0 5px 12px rgba(0,0,0,0.4) !important;
-
-        color: white !important;
-        text-align: center !important;
-        overflow: hidden !important;
-    `;
-
-    const icon = card.querySelector(".roulette-card-icon");
-    const name = card.querySelector(".roulette-card-name");
+    const item = items[index];
+    const icon = card.querySelector("img");
+    const name = card.querySelector(".roulette-prize-name");
+    const content = card.querySelector(".roulette-card-content");
 
     if (icon) {
-        icon.style.cssText = `
-            font-size: 36px;
-            line-height: 1;
-            filter: drop-shadow(0 3px 5px rgba(0,0,0,0.5));
-        `;
+        icon.src = item.image;
+        icon.alt = item.name;
     }
 
     if (name) {
-        name.style.cssText = `
-            color: #f0e5ff;
-            font-size: 12px;
-            font-weight: 700;
-            line-height: 1.3;
-            text-align: center;
-            width: 100%;
-        `;
+        name.textContent = item.name;
+    }
+
+    // Компенсируем вращение колеса,
+    // чтобы содержимое секторов оставалось ровным
+    if (content) {
+        content.style.transition = "none";
+        content.style.transform = "rotate(0deg)";
     }
 });
+// Вращаем содержимое карточек в обратную сторону
+cards.forEach(card => {
+    const content = card.querySelector(".roulette-card-content");
+    if (!content) return;
 
-        // Находим выигрышную карточку
-const winningCard = track.children[60];
-
-// Сбрасываем предыдущую позицию
-track.style.transition = "none";
-track.style.transform = "translateX(0px)";
-
-// Принудительно обновляем расположение
-track.offsetHeight;
-
-// Вычисляем расстояние до центра выигрышной карточки
-const windowRect = windowElement.getBoundingClientRect();
-const cardRect = winningCard.getBoundingClientRect();
-
-const windowCenter = windowRect.left + windowRect.width / 2;
-const cardCenter = cardRect.left + cardRect.width / 2;
-
-const offset = cardCenter - windowCenter;
-
-// Звуки прохождения карточек
-const rouletteTickSound = new Audio("sounds/roulette-tick.mp3");
-rouletteTickSound.volume = 0.5;
-
-// Определяем ближайшую к указателю карточку
-function getNearestCardIndex() {
-    const pointerX =
-        windowElement.getBoundingClientRect().left +
-        windowElement.getBoundingClientRect().width / 2;
-
-    let nearestIndex = 0;
-    let minDistance = Infinity;
-
-    Array.from(track.children).forEach((card, index) => {
-        const rect = card.getBoundingClientRect();
-        const cardCenter = rect.left + rect.width / 2;
-        const distance = Math.abs(pointerX - cardCenter);
-
-        if (distance < minDistance) {
-            minDistance = distance;
-            nearestIndex = index;
-        }
-    });
-
-    return nearestIndex;
-}
-
-// Звуки прохождения карточек
-rouletteTickSound.volume = 0.5;
-
-let lastTickIndex = getNearestCardIndex();
-const rouletteStartTime = performance.now();
-
-function playRouletteTick() {
-    rouletteTickSound.currentTime = 0;
-    rouletteTickSound.play().catch(() => {});
-}
-
-// Определяем ближайшую карточку
-function getNearestCardIndex() {
-    const windowRect = windowElement.getBoundingClientRect();
-    const pointerX = windowRect.left + windowRect.width / 2;
-
-    let nearestIndex = 0;
-    let minDistance = Infinity;
-
-    Array.from(track.children).forEach((card, index) => {
-        const rect = card.getBoundingClientRect();
-        const cardCenter = rect.left + rect.width / 2;
-        const distance = Math.abs(pointerX - cardCenter);
-
-        if (distance < minDistance) {
-            minDistance = distance;
-            nearestIndex = index;
-        }
-    });
-
-    return nearestIndex;
-}
-
-// Первые 2 секунды — быстрые линейные щелчки
-let linearTickInterval = setInterval(() => {
-    if (performance.now() - rouletteStartTime < 2200) {
-        playRouletteTick();
-    } else {
-        clearInterval(linearTickInterval);
-    }
-}, 100);
-
-// Запускаем анимацию
-requestAnimationFrame(() => {
-    track.style.transition =
+    content.style.transition =
         "transform 7s cubic-bezier(0.12, 0.75, 0.12, 1)";
 
-    track.style.transform = `translateX(${-offset}px)`;
+    content.style.transform = `rotate(${-finalRotation}deg)`;
+});
+// Возвращаем колесо в исходное положение
+track.style.setProperty("transition", "none", "important");
+track.style.setProperty("transform", "rotate(0deg)", "important");
+
+void track.offsetWidth;
+
+    // Звук щелчков
+    function playRouletteTick() {
+        playSound("rouletteTick", 0.5);
+    }
+
+    // Отслеживание секторов
+    let lastTickIndex = -1;
+
+    const rouletteStartTime = performance.now();
 
     function checkRouletteTick() {
         const elapsed = performance.now() - rouletteStartTime;
 
-        if (elapsed >= 2000) {
-            const currentIndex = getNearestCardIndex();
+        const matrix = getComputedStyle(track).transform;
 
-            if (currentIndex !== lastTickIndex) {
-                lastTickIndex = currentIndex;
-                playRouletteTick();
+        if (matrix && matrix !== "none") {
+           const values = matrix.match(/matrix\(([^)]+)\)/);
+
+            if (values) {
+                const parts = values[1].split(",").map(Number);
+
+                const rotation = (
+                    Math.atan2(parts[1], parts[0]) *
+                    180 / Math.PI + 360
+                ) % 360;
+
+                const angle = (360 - rotation) % 360;
+
+                const currentIndex =
+                    Math.floor(angle / sectorSize) % sectorCount;
+
+                if (currentIndex !== lastTickIndex) {
+                    lastTickIndex = currentIndex;
+                    playRouletteTick();
+                }
             }
         }
 
@@ -1475,45 +2077,107 @@ requestAnimationFrame(() => {
         }
     }
 
-    requestAnimationFrame(checkRouletteTick);
-});
+    // Сбрасываем предыдущую позицию
+    track.style.setProperty("transition", "none", "important");
+    track.style.setProperty("transform", "rotate(0deg)", "important");
 
-console.log("Рулетка:", track.children.length, "карточек");
+    void track.offsetWidth;
 
-    const center = windowElement.clientWidth / 2;
+    // Запускаем вращение
+    requestAnimationFrame(() => {
+        track.style.setProperty(
+            "transition",
+            "transform 7s cubic-bezier(0.12, 0.75, 0.12, 1)",
+            "important"
+        );
 
-    // Последняя карточка — выигрышная
-    
-    // const winningCard = track.lastElementChild;
+        track.style.setProperty(
+            "transform",
+            `rotate(${finalRotation}deg)`,
+            "important"
+        );
 
+        requestAnimationFrame(checkRouletteTick);
+    });
+
+    console.log("Бурмалда: выигрыш", prize.name);
+
+    // Начисление награды
     setTimeout(() => {
-    // Останавливаем звук прокручивания
-    rouletteSpinSound.pause();
-    rouletteSpinSound.currentTime = 0;
+      showRouletteWinEffects();
+        const winningCard = track.children[winningIndex];
+        const winningImage = winningCard?.querySelector("img");
 
-    // Звук победы
-    const rouletteWinSound = new Audio("sounds/roulette-win.mp3");
-    rouletteWinSound.volume = 0.7;
-    rouletteWinSound.play().catch(() => {});
+        if (winningImage) {
+            winningImage.animate(
+                [
+                    {
+                        filter: "brightness(1) drop-shadow(0 0 0px gold)",
+                        transform: "scale(1)"
+                    },
+                    {
+                        filter: "brightness(1.8) drop-shadow(0 0 12px gold)",
+                        transform: "scale(1.2)"
+                    },
+                    {
+                        filter: "brightness(1.4) drop-shadow(0 0 8px gold)",
+                        transform: "scale(1.1)"
+                    }
+                ],
+                {
+                    duration: 1200,
+                    easing: "ease-out",
+                    fill: "forwards"
+                }
+            );
+        }
+        playSound("rouletteWin", 0.7);
 
-    // Выдаём награду после завершения прокрутки
-    if (prize.type === "money") addMoney(prize.value);
-    if (prize.type === "gems") addGems(prize.value);
-    if (prize.type === "boost") {
-        state.boostUntil = Date.now() + prize.value * 60 * 1000;
-        state.boostMultiplier = 2;
-    }
-    if (prize.type === "token") state.tokens += prize.value;
+        switch (prize.type) {
+            case "money":
+                addMoney(prize.value);
+                break;
 
-    setText("wheelSymbol", "🎉");
-    setText("wheelResult", "Твоя награда: " + prize.name);
+            case "gems":
+                addGems(prize.value);
+                break;
 
-    saveGame();
-    renderAll();
+            case "boost":
+                state.boostUntil =
+                    Date.now() + prize.value * 60 * 1000;
 
-    notify("Бурмалда: " + prize.name);
-}, 7200);
+                state.boostMultiplier = 2;
+                break;
+
+            case "token":
+                state.tokens += prize.value;
+                break;
+
+            default:
+                console.error("Неизвестный тип награды:", prize);
+                notify("Ошибка: неизвестный тип награды!");
+                break;
+        }
+
+        console.log("Приз начислен:", prize);
+
+        setText("wheelSymbol", "🎉");
+        setText("wheelResult", "Твоя награда: " + prize.name);
+
+        saveGame();
+        renderAll();
+        renderRouletteWheel();
+
+        notify("Бурмалда: " + prize.name);
+
+        // Разблокировка кнопок
+        if (freeButton) freeButton.disabled = false;
+        if (paidButton) paidButton.disabled = false;
+
+    }, 7200);
 }
+
+
 
 
   // --------------------------------------------------
@@ -1545,42 +2209,45 @@ console.log("Рулетка:", track.children.length, "карточек");
     const price = getClickCost();
 
     if (state.money < price) {
-      notify("Недостаточно ресурсов!");
-      return;
+        notify("Недостаточно ресурсов!");
+        return;
     }
 
     state.money -= price;
     state.clickLevel += 1;
 
+    playSound("purchase", 0.6);
+
     saveGame();
     renderAll();
 
     notify("Сила клика увеличена!");
-  }
+}
 
-  function buyBeltUpgrade() {
+function buyBeltUpgrade() {
     const price = getBeltCost();
 
     if (state.money < price) {
-      notify("Недостаточно ресурсов!");
-      return;
+        notify("Недостаточно ресурсов!");
+        return;
     }
 
     state.money -= price;
     state.beltLevel += 1;
 
+    playSound("purchase", 0.6);
+
     saveGame();
     renderAll();
 
     notify("Конвейер улучшен!");
-  }
-
+}
   function buyShopItem(id) {
     const item = shopItems.find(entry => entry.id === id);
     if (!item) return;
 
     if (state.gemBalance < item.price) {
-      notify("Недостаточно Gems!");
+      notify("Недостаточно гемов!");
       return;
     }
 
@@ -1613,42 +2280,363 @@ console.log("Рулетка:", track.children.length, "карточек");
 
     notify("Покупка успешно совершена!");
   }
+function watchGemAd() {
+  if (!yandexSDKReady || !ysdk) {
+    return notify("Реклама доступна только на платформе Яндекс Игр!");
+  }
 
-  function buyGemPack(index) {
-    if (index === 0) {
-      if (state.starterPackClaimed) return notify("Стартовый набор уже был получен!");
-      state.starterPackClaimed = true;
-      addGems(100);
-    } else {
-      // Демонстрационные пакеты; реальные платежи подключаются через SDK Яндекс Игр.
-      const amount = ({ 1: 500, 2: 1500 })[index];
-      if (!amount) return;
-      addGems(amount);
+  if (rewardedAdActive) {
+    return notify("Реклама уже запущена!");
+  }
+
+  rewardedAdActive = true;
+
+  let rewardReceived = false;
+  let gameplayStopped = false;
+
+  function resumeGame() {
+    if (!gameplayStopped) return;
+
+    gameplayStopped = false;
+    ysdk.features?.GameplayAPI?.start();
+  }
+
+  try {
+    ysdk.adv.showRewardedVideo({
+      callbacks: {
+        onOpen: () => {
+          console.log("Rewarded-реклама запущена.");
+
+          gameplayStopped = true;
+          ysdk.features?.GameplayAPI?.stop();
+        },
+
+        onRewarded: () => {
+          if (rewardReceived) return;
+
+          rewardReceived = true;
+
+          addGems(20);
+          saveGame();
+          renderAll();
+
+          notify("Ты получил 20 гемов за просмотр рекламы!");
+        },
+
+        onClose: (wasShown) => {
+          console.log("Реклама закрыта:", wasShown);
+
+          rewardedAdActive = false;
+          resumeGame();
+
+          if (!rewardReceived) {
+            notify("Реклама завершена без награды.");
+          }
+        },
+
+        onError: (error) => {
+          console.error("Ошибка rewarded-рекламы:", error);
+
+          rewardedAdActive = false;
+          resumeGame();
+
+          notify("Не удалось загрузить рекламу. Попробуй позже.");
+        }
+      }
+    });
+  } catch (error) {
+    console.error("Ошибка запуска рекламы:", error);
+
+    rewardedAdActive = false;
+    resumeGame();
+
+    notify("Не удалось запустить рекламу.");
+  }
+}
+  async function buyGemPack(index) {
+  // Бесплатный стартовый набор.
+  if (index === 0) {
+    if (state.starterPackClaimed) {
+      return notify("Стартовый набор уже был получен!");
     }
+
+    state.starterPackClaimed = true;
+    addGems(100);
+
     saveGame();
     renderAll();
-    notify(index === 0 ? "Стартовый набор получен один раз!" : "Демо Gems начислены.");
+
+    notify("Стартовые 100 гемов получены!");
+    return;
   }
+
+  if (!yandexSDKReady || !payments) {
+    return notify("Платежи доступны только на платформе Яндекс Игр.");
+  }
+
+  const productId = GEM_PACKAGE_IDS[index];
+
+  if (!productId) {
+    return notify("Неизвестный набор гемов.");
+  }
+
+  try {
+    const purchase = await payments.purchase({
+      id: productId
+    });
+
+    await handleGemPurchase(purchase);
+
+  } catch (error) {
+    console.error("Ошибка покупки:", error);
+    notify("Покупка не завершена. Попробуй ещё раз.");
+  }
+}
+  async function savePurchaseState() {
+  state.lastSave = Date.now();
+
+  try {
+    // Сначала локальная запись.
+    localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+
+    // Затем обязательная запись в облако.
+    await saveCloudState(true);
+
+    console.log("Покупка сохранена локально и в облаке.");
+    return true;
+
+  } catch (error) {
+    console.error("Ошибка сохранения покупки:", error);
+    return false;
+  }
+}
+
+async function handleGemPurchase(purchase) {
+  if (!purchase || !purchase.purchaseToken) {
+    throw new Error("Некорректные данные покупки");
+  }
+
+  const productId = purchase.productID;
+  const gemAmount = GEM_PRODUCTS[productId];
+  const token = purchase.purchaseToken;
+
+  if (!gemAmount) {
+    console.error("Неизвестный товар:", productId);
+    throw new Error("Неизвестный товар покупки");
+  }
+
+  if (!state.processedPurchases.includes(token)) {
+    const previousBalance = state.gemBalance;
+
+    // Начисляем гемы и отмечаем покупку обработанной.
+    addGems(gemAmount);
+    state.processedPurchases.push(token);
+
+    // Сначала сохраняем покупку локально и в облаке.
+    if (!(await savePurchaseState())) {
+      // Если сохранение не удалось — отменяем начисление.
+      state.gemBalance = previousBalance;
+
+      state.processedPurchases =
+        state.processedPurchases.filter(item => item !== token);
+
+      // Записываем откат в локальное сохранение.
+      try {
+        localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+      } catch (error) {
+        console.error("Не удалось сохранить откат покупки:", error);
+      }
+
+      throw new Error("Не удалось сохранить покупку");
+    }
+
+    renderAll();
+    notify(`Получено ${format(gemAmount)} гемов!`);
+  }
+
+  // Поглощаем покупку только после успешного сохранения.
+  await payments.consumePurchase(token);
+
+  console.log("Покупка успешно обработана:", productId);
+}
+
+async function restoreGemPurchases() {
+  if (!payments) return;
+
+  try {
+    const purchases = await payments.getPurchases();
+
+    console.log("Найдено необработанных покупок:", purchases.length);
+
+    for (const purchase of purchases) {
+      try {
+        await handleGemPurchase(purchase);
+      } catch (error) {
+        console.error(
+          "Ошибка восстановления покупки:",
+          purchase.productID,
+          error
+        );
+      }
+    }
+
+  } catch (error) {
+    console.error("Ошибка проверки покупок:", error);
+  }
+}
+    
+function confirmAction(title, message, onConfirm) {
+    // создаём стили автоматически
+    if (!document.getElementById("customConfirmStyles")) {
+        const style = document.createElement("style");
+        style.id = "customConfirmStyles";
+
+        style.textContent = `
+            .custom-confirm-overlay {
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.8);
+                backdrop-filter: blur(6px);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 999999;
+                animation: confirmFadeIn 0.2s ease;
+                padding: 20px;
+            }
+
+            .custom-confirm {
+                width: 100%;
+                max-width: 400px;
+                padding: 28px;
+                background: linear-gradient(145deg, #252535, #171721);
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 20px;
+                text-align: center;
+                color: white;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+                animation: confirmScaleIn 0.25s ease;
+            }
+
+            .custom-confirm h2 {
+                margin: 0 0 14px;
+                font-size: 23px;
+                color: #fff;
+            }
+
+            .custom-confirm p {
+                color: #aaa;
+                line-height: 1.6;
+                margin-bottom: 26px;
+                font-size: 14px;
+            }
+
+            .confirm-buttons {
+                display: flex;
+                gap: 12px;
+            }
+
+            .confirm-buttons button {
+                flex: 1;
+                padding: 13px 10px;
+                border: none;
+                border-radius: 11px;
+                cursor: pointer;
+                font-weight: bold;
+                font-size: 14px;
+                transition: 0.2s;
+            }
+
+            .confirm-cancel {
+                background: #393947;
+                color: white;
+            }
+
+            .confirm-accept {
+                background: linear-gradient(135deg, #e04444, #a92323);
+                color: white;
+                box-shadow: 0 4px 15px rgba(220,50,50,0.25);
+            }
+
+            .confirm-buttons button:hover {
+                filter: brightness(1.2);
+                transform: translateY(-2px);
+            }
+
+            @keyframes confirmFadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
+
+            @keyframes confirmScaleIn {
+                from {
+                    opacity: 0;
+                    transform: scale(0.9);
+                }
+                to {
+                    opacity: 1;
+                    transform: scale(1);
+                }
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    // создаём окно
+    const modal = document.createElement("div");
+    modal.className = "custom-confirm-overlay";
+
+    modal.innerHTML = `
+        <div class="custom-confirm">
+            <h2>${title}</h2>
+            <p>${message}</p>
+
+            <div class="confirm-buttons">
+                <button class="confirm-cancel">Отмена</button>
+                <button class="confirm-accept">Подтвердить</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    modal.querySelector(".confirm-cancel").onclick = () => {
+        modal.remove();
+    };
+
+    modal.querySelector(".confirm-accept").onclick = () => {
+        modal.remove();
+        onConfirm();
+    };
+
+    // закрытие по клику вне окна
+    modal.onclick = (e) => {
+        if (e.target === modal) {
+            modal.remove();
+        }
+    };
+}
 
   // --------------------------------------------------
   // СБРОС ИГРЫ
   // --------------------------------------------------
 
-  function resetGame() {
-    const confirmed = confirm(
-      "Ты действительно хочешь сбросить весь прогресс? Это действие нельзя отменить."
+function resetGame() {
+    confirmAction(
+        "Сброс прогресса",
+        "Ты действительно хочешь сбросить весь прогресс? Это действие нельзя отменить.",
+        () => {
+            state = structuredClone(defaultState);
+
+            saveGame();
+            renderAll();
+            openPage("factoryPage");
+
+            notify("Прогресс сброшен.");
+        }
     );
-
-    if (!confirmed) return;
-
-    state = structuredClone(defaultState);
-
-    saveGame();
-    renderAll();
-    openPage("factoryPage");
-
-    notify("Прогресс сброшен.");
-  }
+}
 
   // --------------------------------------------------
   // ОФЛАЙН-ДОХОД
@@ -1693,6 +2681,7 @@ console.log("Рулетка:", track.children.length, "карточек");
   }
 
   function gameTick() {
+    if (rewardedAdActive) return;
     const now = Date.now();
     const delta = Math.min((now - lastTick) / 1000, 5);
 
@@ -1703,6 +2692,9 @@ console.log("Рулетка:", track.children.length, "карточек");
 
       if (income > 0) addMoney(income);
     }
+
+    // Пока вкладка скрыта, интерфейс не перерисовываем
+    if (document.hidden) return;
 
     renderTop();
 
@@ -1720,46 +2712,155 @@ console.log("Рулетка:", track.children.length, "карточек");
     }
   }
 // ===============================
-// СИСТЕМА ЗВУКОВ
+// СИСТЕМА ЗВУКОВ (Web Audio API)
 // ===============================
+// Раньше каждый звук был <audio>, а на iOS Safari это сильно лагает вместе
+// с WebGL: каждый play()/currentTime=0 заново дёргает аппаратный декодер
+// mp3 и основной поток. Теперь все звуки один раз декодируются в память
+// (AudioBuffer) и проигрываются через AudioContext без декодирования.
 
-const gameSounds = {
-    click: new Audio("sounds/click.mp3"),
-    coin: new Audio("sounds/coin.mp3"),
-    gem: new Audio("sounds/gem.mp3"),
-    critical: new Audio("sounds/critical.mp3"),
-    comboStart: new Audio("sounds/combo-start.mp3"),
-    comboEnd: new Audio("sounds/combo-end.mp3"),
-    purchase: new Audio("sounds/purchase.mp3")
+const SOUND_FILES = {
+    click: "sounds/click.mp3",
+    coin: "sounds/coin.mp3",
+    gem: "sounds/gem.mp3",
+    critical: "sounds/critical.mp3",
+    comboStart: "sounds/combo-start.mp3",
+    comboEnd: "sounds/combo-end.mp3",
+    purchase: "sounds/purchase.mp3",
+    rouletteStart: "sounds/roulette-start.mp3",
+    rouletteTick: "sounds/roulette-tick.mp3",
+    rouletteWin: "sounds/roulette-win.mp3"
 };
-// ===============================
-// ФОНОВАЯ МУЗЫКА
-// ===============================
-
-const backgroundMusic = new Audio("sounds/background.mp3");
-
-backgroundMusic.loop = true;
-backgroundMusic.volume = 0;
-
-// ===============================
-// ОБЩЕЕ УПРАВЛЕНИЕ ЗВУКАМИ
-// ===============================
+const MUSIC_FILE = "sounds/background.mp3";
+const MUSIC_VOLUME = 0.35;
+const MAX_SIMULTANEOUS_SOUNDS = 8;
 
 let soundEnabled = true;
 let musicEnabled = true;
 let musicStarted = false;
 
-const activeSounds = [];
+// На iOS не перехватывать аудиосессию и не прерывать другую музыку
+try {
+    if (navigator.audioSession) navigator.audioSession.type = "ambient";
+} catch (e) {}
+
+let audioCtx = null;
+let sfxGain = null;
+let musicGain = null;
+const soundBuffers = {};
+let musicBuffer = null;
+let musicSource = null;
+let soundsLoading = null;
+const activeSounds = new Set();
+
+function getAudioContext() {
+    if (audioCtx) return audioCtx;
+
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+
+    try {
+        audioCtx = new Ctx({ latencyHint: "interactive" });
+    } catch (e) {
+        audioCtx = new Ctx();
+    }
+
+    sfxGain = audioCtx.createGain();
+    sfxGain.connect(audioCtx.destination);
+
+    musicGain = audioCtx.createGain();
+    musicGain.gain.value = MUSIC_VOLUME;
+    musicGain.connect(audioCtx.destination);
+
+    return audioCtx;
+}
+
+function decodeBuffer(ctx, arrayBuffer) {
+    return new Promise((resolve, reject) => {
+        // callback-форма работает и в старых Safari
+        ctx.decodeAudioData(arrayBuffer, resolve, reject);
+    });
+}
+
+async function loadAudioBuffer(ctx, url) {
+    const response = await fetch(url);
+    const data = await response.arrayBuffer();
+    return decodeBuffer(ctx, data);
+}
+
+function loadAllSounds() {
+    if (soundsLoading) return soundsLoading;
+
+    const ctx = getAudioContext();
+    if (!ctx) return Promise.resolve();
+
+    // Сначала короткие эффекты, потом (в фоне) музыка
+    soundsLoading = Promise.all(
+        Object.entries(SOUND_FILES).map(([name, url]) =>
+            loadAudioBuffer(ctx, url)
+                .then(buffer => { soundBuffers[name] = buffer; })
+                .catch(() => {})
+        )
+    ).then(() =>
+        loadAudioBuffer(ctx, MUSIC_FILE)
+            .then(buffer => { musicBuffer = buffer; })
+            .catch(() => {})
+    ).then(() => {
+        if (musicEnabled && musicStarted) startMusicSource();
+    });
+
+    return soundsLoading;
+}
+
+// Вызывается из жеста пользователя: создаёт и "размораживает" контекст на iOS
+function unlockAudio() {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    if (ctx.state !== "running") {
+        const resumed = ctx.resume();
+        if (resumed && resumed.catch) resumed.catch(() => {});
+    }
+
+    loadAllSounds();
+}
 
 function playSound(name, volume = 0.5) {
-    if (!soundEnabled) return;
+    if (!soundEnabled || !audioCtx || audioCtx.state !== "running") return null;
 
-    const sound = gameSounds[name];
-    if (!sound) return;
+    const buffer = soundBuffers[name];
+    if (!buffer) return null;
 
-    sound.volume = volume;
-    sound.currentTime = 0;
-    sound.play().catch(() => {});
+    // Не даём накопиться десяткам голосов при быстрых кликах
+    if (activeSounds.size >= MAX_SIMULTANEOUS_SOUNDS && name !== "rouletteWin") {
+        return null;
+    }
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+
+    const gain = audioCtx.createGain();
+    gain.gain.value = volume;
+
+    source.connect(gain);
+    gain.connect(sfxGain);
+
+    const entry = { source, gain };
+    activeSounds.add(entry);
+
+    source.onended = () => {
+        activeSounds.delete(entry);
+        try { source.disconnect(); gain.disconnect(); } catch (e) {}
+    };
+
+    source.start(0);
+    return entry;
+}
+
+function stopSoundEntry(entry) {
+    if (!entry) return;
+    try { entry.source.stop(0); } catch (e) {}
+    activeSounds.delete(entry);
 }
 
 function toggleGameSounds() {
@@ -1772,27 +2873,39 @@ function toggleGameSounds() {
     }
 
     if (!soundEnabled) {
-        Object.values(gameSounds).forEach(sound => {
-            sound.pause();
-            sound.currentTime = 0;
+        activeSounds.forEach(entry => {
+            try { entry.source.stop(0); } catch (e) {}
         });
-
-        activeSounds.forEach(sound => {
-            sound.pause();
-            sound.currentTime = 0;
-        });
+        activeSounds.clear();
     }
 }
 
-function startBackgroundMusic() {
-    if (!musicEnabled || musicStarted) return;
+function startMusicSource() {
+    if (!audioCtx || !musicBuffer || musicSource) return;
 
-    backgroundMusic.play().then(() => {
-        musicStarted = true;
-        backgroundMusic.volume = 0.35;
-    }).catch(() => {
-        musicStarted = false;
-    });
+    const source = audioCtx.createBufferSource();
+    source.buffer = musicBuffer;
+    source.loop = true;
+    source.connect(musicGain);
+    source.start(0);
+    musicSource = source;
+}
+
+function stopMusicSource() {
+    if (!musicSource) return;
+    try { musicSource.stop(0); } catch (e) {}
+    try { musicSource.disconnect(); } catch (e) {}
+    musicSource = null;
+}
+
+function startBackgroundMusic() {
+    if (!musicEnabled) return;
+
+    unlockAudio();
+    musicStarted = true;
+
+    // если музыка ещё декодируется - она запустится сама после загрузки
+    startMusicSource();
 }
 
 function toggleBackgroundMusic() {
@@ -1807,11 +2920,22 @@ function toggleBackgroundMusic() {
     if (musicEnabled) {
         startBackgroundMusic();
     } else {
-        backgroundMusic.pause();
-        backgroundMusic.currentTime = 0;
+        stopMusicSource();
         musicStarted = false;
     }
 }
+
+// Safari глушит контекст при сворачивании вкладки / звонке - будим его
+document.addEventListener("visibilitychange", () => {
+    if (!audioCtx) return;
+
+    if (document.hidden) {
+        if (audioCtx.state === "running") audioCtx.suspend().catch(() => {});
+    } else {
+        audioCtx.resume().catch(() => {});
+    }
+});
+
 
   // --------------------------------------------------
   // ОБРАБОТЧИКИ СОБЫТИЙ
@@ -1819,11 +2943,17 @@ function toggleBackgroundMusic() {
 
   
   function bindEvents() {
-    document.addEventListener("pointerdown", event => {
-    if (event.target.closest("#musicToggle")) return;
-
-    startBackgroundMusic();
-}, { once: true });
+    // iOS разрешает запуск звука только из жеста: ждём первое касание
+    const firstGesture = event => {
+        if (event.target.closest && event.target.closest("#musicToggle")) return;
+        startBackgroundMusic();
+        if (audioCtx && audioCtx.state === "running") {
+            document.removeEventListener("pointerdown", firstGesture, true);
+            document.removeEventListener("touchend", firstGesture, true);
+        }
+    };
+    document.addEventListener("pointerdown", firstGesture, true);
+    document.addEventListener("touchend", firstGesture, true);
     document.addEventListener("click", event => {
       const musicButton = event.target.closest("#musicToggle");
           if (musicButton) {
@@ -1877,7 +3007,10 @@ if (actionButton) {
         if (action === "buy-gems") {
           buyGemPack(Number(actionButton.dataset.index));
         }
-
+        
+        if (action === "watch-gem-ad") {
+        watchGemAd();
+      }
         return;
       }
 
@@ -1895,6 +3028,12 @@ if (actionButton) {
 
     lastClickTime = now;
 
+    // Чем чаще клики, тем плотнее частицы по краям персонажа.
+    const clickSpeed = now < clickBoostUntil
+        ? 9
+        : Math.max(1, Math.min(6, 1 + clickCombo / 4));
+    if (window.spawnVerityEffects) window.spawnVerityEffects(clickSpeed, false);
+
     // активация бонуса
     
 if (clickCombo >= COMBO_REQUIRED) {
@@ -1903,6 +3042,7 @@ if (clickCombo >= COMBO_REQUIRED) {
     clickCombo = 0;
 
     showClickBoost();
+    if (window.spawnVerityEffects) window.spawnVerityEffects(1, true);
     if (window.setVerityAura) {
     window.setVerityAura(true);
 }
@@ -1952,8 +3092,8 @@ if (clickCombo >= COMBO_REQUIRED) {
     addMoney(amount);
     showCoinEffect(amount, event.clientX, event.clientY);
 
-    renderTop();
-    saveGame();
+    renderClickHud();
+    scheduleClickSave();
     return;
 }
 
@@ -2049,7 +3189,9 @@ styleAudioButtons();
   // --------------------------------------------------
 
 
-function init() {
+async function init() {
+    await yandexSDKPromise;
+
     if (!ensureInterface()) return;
 
     calculateOfflineIncome();
@@ -2068,6 +3210,12 @@ function init() {
     setInterval(gameTick, 1000);
     setInterval(saveGame, 10000);
 
+    // Сохраняем при сворачивании - на iOS страницу могут выгрузить без предупреждения
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) saveGame();
+    });
+    window.addEventListener("pagehide", saveGame);
+
     saveGame();
 
     console.log("Verity Tycoon запущен. Все страницы подключены.");
@@ -2083,13 +3231,13 @@ function init() {
 
 
 
+let activeCoinEffects = 0;
 function showCoinEffect(amount, x, y) {
     const container = document.createElement("div");
 
     const drift = (Math.random() - 0.5) * 100;
     const rotation = (Math.random() - 0.5) * 20;
     const duration = 1400;
-    const start = performance.now();
 
     container.style.cssText = `
         position: fixed;
@@ -2114,18 +3262,19 @@ function showCoinEffect(amount, x, y) {
         color: #fff0a0;
         text-shadow:
             0 2px 2px #754000,
-            0 0 5px #ffb900,
-            0 0 12px #ffcc33,
-            0 0 24px #ff9900;
+            0 0 8px #ffb900,
+            0 0 18px #ff9900;
         transform: translate(-50%, 0);
+        will-change: transform, opacity;
     `;
 
     container.appendChild(effect);
 
-    // Искры и маленькие монетки
-    const particles = [];
+    // При очень частых кликах частицы пропускаем, оставляем только число
+    const particleCount = activeCoinEffects > 6 ? 0 : 9;
+    const particleAnimations = [];
 
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < particleCount; i++) {
         const particle = document.createElement("div");
         const angle = Math.random() * Math.PI * 2;
         const distance = 30 + Math.random() * 65;
@@ -2139,65 +3288,35 @@ function showCoinEffect(amount, x, y) {
             height: ${isCoin ? 7 : 4}px;
             border-radius: ${isCoin ? "50%" : "2px"};
             background: ${isCoin ? "#ffbd24" : "#fff1a0"};
-            box-shadow: 0 0 8px #ffb900;
+            box-shadow: 0 0 6px #ffb900;
+            will-change: transform, opacity;
         `;
 
         container.appendChild(particle);
 
-        particles.push({
-            element: particle,
-            dx: Math.cos(angle) * distance,
-            dy: Math.sin(angle) * distance,
-            spin: Math.random() * 360
-        });
+        const dx = Math.cos(angle) * distance;
+        const dy = Math.sin(angle) * distance;
+        const spin = Math.random() * 360;
+
+        particleAnimations.push(particle.animate([
+            { transform: "translate(0,0) rotate(0deg)", opacity: 1 },
+            { transform: `translate(${dx}px,${dy - 20}px) rotate(${spin}deg)`, opacity: 0 }
+        ], { duration, easing: "cubic-bezier(.2,.7,.3,1)", fill: "forwards" }));
     }
 
     document.body.appendChild(container);
+    activeCoinEffects++;
 
-    function animate(now) {
-        const progress = Math.min((now - start) / duration, 1);
-        const ease = 1 - Math.pow(1 - progress, 3);
+    const anim = effect.animate([
+        { transform: "translate(-50%,0) scale(.5) rotate(0deg)", opacity: 0, offset: 0 },
+        { transform: `translate(calc(-50% + ${drift * .3}px),-35px) scale(1.3) rotate(${rotation * .3}deg)`, opacity: 1, offset: .15 },
+        { transform: `translate(calc(-50% + ${drift}px),-110px) scale(1.05) rotate(${rotation}deg)`, opacity: 0, offset: 1 }
+    ], { duration, easing: "ease-out", fill: "forwards" });
 
-        const moveX = drift * ease;
-        const moveY = -110 * ease;
-
-        const scale = progress < 0.15
-            ? 0.5 + (progress / 0.15) * 0.8
-            : 1.3 - (progress - 0.15) * 0.35;
-
-        const opacity = progress < 0.15
-            ? progress / 0.15
-            : 1 - Math.pow((progress - 0.15) / 0.85, 2);
-
-        effect.style.transform = `
-            translate(calc(-50% + ${moveX}px), ${moveY}px)
-            scale(${scale})
-            rotate(${rotation * ease}deg)
-        `;
-
-        effect.style.opacity = opacity;
-
-        particles.forEach(p => {
-            p.element.style.transform = `
-                translate(
-                    ${p.dx * ease}px,
-                    ${p.dy * ease - progress * 20}px
-                )
-                rotate(${p.spin * progress}deg)
-            `;
-
-            p.element.style.opacity = 1 - progress;
-        });
-
-        if (progress < 1) {
-            requestAnimationFrame(animate);
-        } else {
-            container.remove();
-        }
-    }
-
-    requestAnimationFrame(animate);
+    anim.onfinish = () => {
+        activeCoinEffects = Math.max(0, activeCoinEffects - 1);
+        container.remove();
+    };
 }
-
 
 })();
